@@ -37,45 +37,43 @@ module RubyIndexer
     sig { params(declaration: RBS::AST::Declarations::Base, pathname: Pathname).void }
     def process_declaration(declaration, pathname)
       case declaration
-      when RBS::AST::Declarations::Class
-        handle_class_declaration(declaration, pathname)
-      when RBS::AST::Declarations::Module
-        handle_module_declaration(declaration, pathname)
+      when RBS::AST::Declarations::Class, RBS::AST::Declarations::Module
+        handle_class_or_module_declaration(declaration, pathname)
+      when RBS::AST::Declarations::Constant
+        namespace_nesting = declaration.name.namespace.path.map(&:to_s)
+        handle_constant(declaration, namespace_nesting, pathname.to_s)
       else # rubocop:disable Style/EmptyElse
         # Other kinds not yet handled
       end
     end
 
-    sig { params(declaration: RBS::AST::Declarations::Class, pathname: Pathname).void }
-    def handle_class_declaration(declaration, pathname)
-      nesting = [declaration.name.name.to_s]
-      file_path = pathname.to_s
-      location = to_ruby_indexer_location(declaration.location)
-      comments = Array(declaration.comment&.string)
-      parent_class = declaration.super_class&.name&.name&.to_s
-      class_entry = Entry::Class.new(nesting, file_path, location, location, comments, parent_class)
-      add_declaration_mixins_to_entry(declaration, class_entry)
-      @index.add(class_entry)
-      declaration.members.each do |member|
-        next unless member.is_a?(RBS::AST::Members::MethodDefinition)
-
-        handle_method(member, class_entry)
-      end
+    sig do
+      params(declaration: T.any(RBS::AST::Declarations::Class, RBS::AST::Declarations::Module), pathname: Pathname).void
     end
-
-    sig { params(declaration: RBS::AST::Declarations::Module, pathname: Pathname).void }
-    def handle_module_declaration(declaration, pathname)
+    def handle_class_or_module_declaration(declaration, pathname)
       nesting = [declaration.name.name.to_s]
       file_path = pathname.to_s
       location = to_ruby_indexer_location(declaration.location)
-      comments = Array(declaration.comment&.string)
-      module_entry = Entry::Module.new(nesting, file_path, location, location, comments)
-      add_declaration_mixins_to_entry(declaration, module_entry)
-      @index.add(module_entry)
+      comments = comments_to_string(declaration)
+      entry = if declaration.is_a?(RBS::AST::Declarations::Class)
+        parent_class = declaration.super_class&.name&.name&.to_s
+        Entry::Class.new(nesting, file_path, location, location, comments, parent_class)
+      else
+        Entry::Module.new(nesting, file_path, location, location, comments)
+      end
+      add_declaration_mixins_to_entry(declaration, entry)
+      @index.add(entry)
       declaration.members.each do |member|
-        next unless member.is_a?(RBS::AST::Members::MethodDefinition)
-
-        handle_method(member, module_entry)
+        case member
+        when RBS::AST::Members::MethodDefinition
+          handle_method(member, entry)
+        when RBS::AST::Declarations::Constant
+          handle_constant(member, nesting, file_path)
+        when RBS::AST::Members::Alias
+          # In RBS, an alias means that two methods have the same signature.
+          # It does not mean the same thing as a Ruby alias.
+          handle_signature_alias(member, entry)
+        end
       end
     end
 
@@ -115,7 +113,7 @@ module RubyIndexer
       name = member.name.name
       file_path = member.location.buffer.name
       location = to_ruby_indexer_location(member.location)
-      comments = Array(member.comment&.string)
+      comments = comments_to_string(member)
 
       visibility = case member.visibility
       when :private
@@ -223,6 +221,61 @@ module RubyIndexer
       name = param.name || Entry::KeywordRestParameter::DEFAULT_NAME
 
       Entry::KeywordRestParameter.new(name: name)
+    end
+
+    # RBS treats constant definitions differently depend on where they are defined.
+    # When constants' rbs are defined inside a class/module block, they are treated as
+    # members of the class/module.
+    #
+    # module Encoding
+    #   US_ASCII = ... # US_ASCII is a member of Encoding
+    # end
+    #
+    # When constants' rbs are defined outside a class/module block, they are treated as
+    # top-level constants.
+    #
+    # Complex::I = ... # Complex::I is a top-level constant
+    #
+    # And we need to handle their nesting differently.
+    sig { params(declaration: RBS::AST::Declarations::Constant, nesting: T::Array[String], file_path: String).void }
+    def handle_constant(declaration, nesting, file_path)
+      fully_qualified_name = [*nesting, declaration.name.name.to_s].join("::")
+      @index.add(Entry::Constant.new(
+        fully_qualified_name,
+        file_path,
+        to_ruby_indexer_location(declaration.location),
+        comments_to_string(declaration),
+      ))
+    end
+
+    sig { params(member: RBS::AST::Members::Alias, owner_entry: Entry::Namespace).void }
+    def handle_signature_alias(member, owner_entry)
+      file_path = member.location.buffer.name
+      comments = comments_to_string(member)
+
+      entry = Entry::UnresolvedMethodAlias.new(
+        member.new_name.to_s,
+        member.old_name.to_s,
+        owner_entry,
+        file_path,
+        to_ruby_indexer_location(member.location),
+        comments,
+      )
+
+      @index.add(entry)
+    end
+
+    sig do
+      params(declaration: T.any(
+        RBS::AST::Declarations::Class,
+        RBS::AST::Declarations::Module,
+        RBS::AST::Declarations::Constant,
+        RBS::AST::Members::MethodDefinition,
+        RBS::AST::Members::Alias,
+      )).returns(T::Array[String])
+    end
+    def comments_to_string(declaration)
+      Array(declaration.comment&.string)
     end
   end
 end

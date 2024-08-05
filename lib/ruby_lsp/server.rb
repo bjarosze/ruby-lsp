@@ -100,16 +100,27 @@ module RubyLsp
     rescue StandardError, LoadError => e
       # If an error occurred in a request, we have to return an error response or else the editor will hang
       if message[:id]
-        send_message(Error.new(
-          id: message[:id],
-          code: Constant::ErrorCodes::INTERNAL_ERROR,
-          message: e.full_message,
-          data: {
-            errorClass: e.class.name,
-            errorMessage: e.message,
-            backtrace: e.backtrace&.join("\n"),
-          },
-        ))
+        # If a document is deleted before we are able to process all of its enqueued requests, we will try to read it
+        # from disk and it raise this error. This is expected, so we don't include the `data` attribute to avoid
+        # reporting these to our telemetry
+        if e.is_a?(Store::NonExistingDocumentError)
+          send_message(Error.new(
+            id: message[:id],
+            code: Constant::ErrorCodes::INVALID_PARAMS,
+            message: e.full_message,
+          ))
+        else
+          send_message(Error.new(
+            id: message[:id],
+            code: Constant::ErrorCodes::INTERNAL_ERROR,
+            message: e.full_message,
+            data: {
+              errorClass: e.class.name,
+              errorMessage: e.message,
+              backtrace: e.backtrace&.join("\n"),
+            },
+          ))
+        end
       end
 
       $stderr.puts("Error processing #{message[:method]}: #{e.full_message}")
@@ -172,6 +183,7 @@ module RubyLsp
       hover_provider = Requests::Hover.provider if enabled_features["hover"]
       folding_ranges_provider = Requests::FoldingRanges.provider if enabled_features["foldingRanges"]
       semantic_tokens_provider = Requests::SemanticHighlighting.provider if enabled_features["semanticHighlighting"]
+      document_formatting_provider = Requests::Formatting.provider if enabled_features["formatting"]
       diagnostics_provider = Requests::Diagnostics.provider if enabled_features["diagnostics"]
       on_type_formatting_provider = Requests::OnTypeFormatting.provider if enabled_features["onTypeFormatting"]
       code_action_provider = Requests::CodeActions.provider if enabled_features["codeActions"]
@@ -194,7 +206,7 @@ module RubyLsp
           document_link_provider: document_link_provider,
           folding_range_provider: folding_ranges_provider,
           semantic_tokens_provider: semantic_tokens_provider,
-          document_formatting_provider: enabled_features["formatting"] && @global_state.formatter != "none",
+          document_formatting_provider: document_formatting_provider && @global_state.formatter != "none",
           document_highlight_provider: enabled_features["documentHighlights"],
           code_action_provider: code_action_provider,
           document_on_type_formatting_provider: on_type_formatting_provider,
@@ -246,6 +258,8 @@ module RubyLsp
         )
       end
 
+      process_indexing_configuration(options.dig(:initializationOptions, :indexing))
+
       begin_progress("indexing-progress", "Ruby LSP: indexing files")
     end
 
@@ -254,28 +268,6 @@ module RubyLsp
       load_addons
       RubyVM::YJIT.enable if defined?(RubyVM::YJIT.enable)
 
-      indexing_config = {}
-
-      # Need to use the workspace URI, otherwise, this will fail for people working on a project that is a symlink.
-      index_path = File.join(@global_state.workspace_path, ".index.yml")
-
-      if File.exist?(index_path)
-        begin
-          indexing_config = YAML.parse_file(index_path).to_ruby
-        rescue Psych::SyntaxError => e
-          message = "Syntax error while loading configuration: #{e.message}"
-          send_message(
-            Notification.new(
-              method: "window/showMessage",
-              params: Interface::ShowMessageParams.new(
-                type: Constant::MessageType::WARNING,
-                message: message,
-              ),
-            ),
-          )
-        end
-      end
-
       if defined?(Requests::Support::RuboCopFormatter)
         @global_state.register_formatter("rubocop", Requests::Support::RuboCopFormatter.new)
       end
@@ -283,7 +275,7 @@ module RubyLsp
         @global_state.register_formatter("syntax_tree", Requests::Support::SyntaxTreeFormatter.new)
       end
 
-      perform_initial_indexing(indexing_config)
+      perform_initial_indexing
       check_formatter_is_available
     end
 
@@ -433,8 +425,6 @@ module RubyLsp
 
       document = @store.get(uri)
 
-      return send_empty_response(message[:id]) if document.is_a?(ERBDocument)
-
       response = Requests::Formatting.new(@global_state, document).perform
       send_message(Result.new(id: message[:id], response: response))
     rescue Requests::Request::InvalidFormatter => error
@@ -459,8 +449,6 @@ module RubyLsp
     def text_document_on_type_formatting(message)
       params = message[:params]
       document = @store.get(params.dig(:textDocument, :uri))
-
-      return send_empty_response(message[:id]) if document.is_a?(ERBDocument)
 
       send_message(
         Result.new(
@@ -489,15 +477,17 @@ module RubyLsp
             @global_state,
             params[:position],
             dispatcher,
-            typechecker_enabled?(document),
+            sorbet_level(document),
           ).perform,
         ),
       )
     end
 
-    sig { params(document: Document).returns(T::Boolean) }
-    def typechecker_enabled?(document)
-      @global_state.has_type_checker && document.sorbet_sigil_is_true_or_higher
+    sig { params(document: Document).returns(Document::SorbetLevel) }
+    def sorbet_level(document)
+      return Document::SorbetLevel::Ignore unless @global_state.has_type_checker
+
+      document.sorbet_level
     end
 
     sig { params(message: T::Hash[Symbol, T.untyped]).void }
@@ -515,8 +505,6 @@ module RubyLsp
     def text_document_code_action(message)
       params = message[:params]
       document = @store.get(params.dig(:textDocument, :uri))
-
-      return send_empty_response(message[:id]) if document.is_a?(ERBDocument)
 
       send_message(
         Result.new(
@@ -573,8 +561,6 @@ module RubyLsp
 
       document = @store.get(uri)
 
-      return send_empty_response(message[:id]) if document.is_a?(ERBDocument)
-
       response = document.cache_fetch("textDocument/diagnostic") do |document|
         Requests::Diagnostics.new(@global_state, document).perform
       end
@@ -606,7 +592,7 @@ module RubyLsp
             document,
             @global_state,
             params,
-            typechecker_enabled?(document),
+            sorbet_level(document),
             dispatcher,
           ).perform,
         ),
@@ -636,7 +622,7 @@ module RubyLsp
             params[:position],
             params[:context],
             dispatcher,
-            typechecker_enabled?(document),
+            sorbet_level(document),
           ).perform,
         ),
       )
@@ -672,7 +658,7 @@ module RubyLsp
             @global_state,
             params[:position],
             dispatcher,
-            typechecker_enabled?(document),
+            sorbet_level(document),
           ).perform,
         ),
       )
@@ -785,16 +771,12 @@ module RubyLsp
       Addon.addons.each(&:deactivate)
     end
 
-    sig { params(config_hash: T::Hash[String, T.untyped]).void }
-    def perform_initial_indexing(config_hash)
+    sig { void }
+    def perform_initial_indexing
       # The begin progress invocation happens during `initialize`, so that the notification is sent before we are
       # stuck indexing files
-      RubyIndexer.configuration.apply_config(config_hash)
-
       Thread.new do
         begin
-          RubyIndexer::RBSIndexer.new(@global_state.index).index_ruby_core
-
           @global_state.index.index_all do |percentage|
             progress("indexing-progress", percentage)
             true
@@ -890,6 +872,47 @@ module RubyLsp
           ),
         )
       end
+    end
+
+    sig { params(indexing_options: T.nilable(T::Hash[Symbol, T.untyped])).void }
+    def process_indexing_configuration(indexing_options)
+      # Need to use the workspace URI, otherwise, this will fail for people working on a project that is a symlink.
+      index_path = File.join(@global_state.workspace_path, ".index.yml")
+
+      if File.exist?(index_path)
+        begin
+          RubyIndexer.configuration.apply_config(YAML.parse_file(index_path).to_ruby)
+          send_message(
+            Notification.new(
+              method: "window/showMessage",
+              params: Interface::ShowMessageParams.new(
+                type: Constant::MessageType::WARNING,
+                message: "The .index.yml configuration file is deprecated. " \
+                  "Please use editor settings to configure the index",
+              ),
+            ),
+          )
+        rescue Psych::SyntaxError => e
+          message = "Syntax error while loading configuration: #{e.message}"
+          send_message(
+            Notification.new(
+              method: "window/showMessage",
+              params: Interface::ShowMessageParams.new(
+                type: Constant::MessageType::WARNING,
+                message: message,
+              ),
+            ),
+          )
+        end
+        return
+      end
+
+      return unless indexing_options
+
+      # The index expects snake case configurations, but VS Code standardizes on camel case settings
+      RubyIndexer.configuration.apply_config(
+        indexing_options.transform_keys { |key| key.to_s.gsub(/([A-Z])/, "_\\1").downcase },
+      )
     end
   end
 end

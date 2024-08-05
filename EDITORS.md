@@ -142,24 +142,20 @@ require("lspconfig").ruby_lsp.setup({
 
 ## LazyVim LSP
 
-For LazyVim, you can add the ruby-lsp by creating a file in your plugins folder (`~/.config/nvim/lua/plugins/ruby_lsp.lua`) and adding the following:
+[As of v12.33.0](https://github.com/LazyVim/LazyVim/pull/3652), Ruby LSP is the default LSP for Ruby.
+
+To ensure the correct Ruby version is selected, we recommend disabling the `mason` option and specifying the
+appropriate command for your Ruby version manager as an absolute path. For example:
 
 ```lua
--- ~/.config/nvim/lua/plugins/ruby_lsp.lua
-
 return {
   {
     "neovim/nvim-lspconfig",
-    ---@class PluginLspOpts
-    opts = {
-      ---@type lspconfig.options
       servers = {
-        -- disable solargraph from auto running when you open ruby files
-        solargraph = {
-          autostart = false
+        ruby_lsp = {
+          mason = false,
+          cmd = { "/Users/username/.asdf/shims/ruby-lsp" },
         },
-        -- ruby_lsp will be automatically installed with mason and loaded with lspconfig
-        ruby_lsp = {},
       },
     },
   },
@@ -205,3 +201,19 @@ You can use the Ruby LSP with RubyMine (or IntelliJ IDEA Ultimate) through the f
 Note that there might be overlapping functionality when using it with RubyMine, given that the IDE provides similar features as the ones coming from the Ruby LSP.
 
 [Ruby LSP plugin](https://plugins.jetbrains.com/plugin/24413-ruby-lsp)
+
+# Indexing Configuration
+
+To configure indexing, pass a JSON hash as part of the initialization options for your editor, for example:
+
+```json
+{
+  "indexing": {
+    "excludedPatterns": ["**/test/**.rb"],
+    "includedPatterns": ["**/bin/**"],
+    "excludedGems": ["rubocop", "rubocop-performance"],
+    "includedPatterns": ["rake"],
+    "excludedMagicComments": ["compiled:true"]
+  }
+}
+```

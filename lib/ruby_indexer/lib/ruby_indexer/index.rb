@@ -84,6 +84,34 @@ module RubyIndexer
       @require_paths_tree.search(query)
     end
 
+    # Searches for a constant based on an unqualified name and returns the first possible match regardless of whether
+    # there are more possible matching entries
+    sig do
+      params(
+        name: String,
+      ).returns(T.nilable(T::Array[T.any(
+        Entry::Namespace,
+        Entry::ConstantAlias,
+        Entry::UnresolvedConstantAlias,
+        Entry::Constant,
+      )]))
+    end
+    def first_unqualified_const(name)
+      _name, entries = @entries.find do |const_name, _entries|
+        const_name.end_with?(name)
+      end
+
+      T.cast(
+        entries,
+        T.nilable(T::Array[T.any(
+          Entry::Namespace,
+          Entry::ConstantAlias,
+          Entry::UnresolvedConstantAlias,
+          Entry::Constant,
+        )]),
+      )
+    end
+
     # Searches entries in the index based on an exact prefix, intended for providing autocomplete. All possible matches
     # to the prefix are returned. The return is an array of arrays, where each entry is the array of entries for a given
     # name match. For example:
@@ -202,8 +230,8 @@ module RubyIndexer
         seen_names: T::Array[String],
       ).returns(T.nilable(T::Array[T.any(
         Entry::Namespace,
-        Entry::Alias,
-        Entry::UnresolvedAlias,
+        Entry::ConstantAlias,
+        Entry::UnresolvedConstantAlias,
       )]))
     end
     def resolve(name, nesting, seen_names = [])
@@ -248,6 +276,7 @@ module RubyIndexer
       ).void
     end
     def index_all(indexable_paths: RubyIndexer.configuration.indexables, &block)
+      RBSIndexer.new(self).index_ruby_core
       # Calculate how many paths are worth 1% of progress
       progress_step = (indexable_paths.length / 100.0).ceil
 
@@ -305,13 +334,13 @@ module RubyIndexer
         entry = @entries[current_name]&.first
 
         case entry
-        when Entry::Alias
+        when Entry::ConstantAlias
           target = entry.target
           return follow_aliased_namespace("#{target}::#{real_parts.join("::")}", seen_names)
-        when Entry::UnresolvedAlias
+        when Entry::UnresolvedConstantAlias
           resolved = resolve_alias(entry, seen_names)
 
-          if resolved.is_a?(Entry::UnresolvedAlias)
+          if resolved.is_a?(Entry::UnresolvedConstantAlias)
             raise UnresolvableAliasError, "The constant #{resolved.name} is an alias to a non existing constant"
           end
 
@@ -410,7 +439,7 @@ module RubyIndexer
         case entry
         when Entry::Namespace
           entry
-        when Entry::Alias
+        when Entry::ConstantAlias
           self[entry.target]&.grep(Entry::Namespace)
         end
       end.flatten
@@ -420,7 +449,7 @@ module RubyIndexer
 
       # The original nesting where we discovered this namespace, so that we resolve the correct names of the
       # included/prepended/extended modules and parent classes
-      nesting = T.must(namespaces.first).nesting
+      nesting = T.must(namespaces.first).nesting.flat_map { |n| n.split("::") }
 
       if nesting.any?
         singleton_levels.times do
@@ -629,7 +658,7 @@ module RubyIndexer
 
         if parent_class_name && fully_qualified_name != parent_class_name
 
-          parent_name_parts = [parent_class_name]
+          parent_name_parts = parent_class_name.split("::")
           singleton_levels.times do
             parent_name_parts << "<Class:#{parent_name_parts.last}>"
           end
@@ -669,9 +698,9 @@ module RubyIndexer
     # that doesn't exist, then we return the same UnresolvedAlias
     sig do
       params(
-        entry: Entry::UnresolvedAlias,
+        entry: Entry::UnresolvedConstantAlias,
         seen_names: T::Array[String],
-      ).returns(T.any(Entry::Alias, Entry::UnresolvedAlias))
+      ).returns(T.any(Entry::ConstantAlias, Entry::UnresolvedConstantAlias))
     end
     def resolve_alias(entry, seen_names)
       alias_name = entry.name
@@ -683,7 +712,7 @@ module RubyIndexer
       return entry unless target
 
       target_name = T.must(target.first).name
-      resolved_alias = Entry::Alias.new(target_name, entry)
+      resolved_alias = Entry::ConstantAlias.new(target_name, entry)
 
       # Replace the UnresolvedAlias by a resolved one so that we don't have to do this again later
       original_entries = T.must(@entries[alias_name])
@@ -702,8 +731,8 @@ module RubyIndexer
         seen_names: T::Array[String],
       ).returns(T.nilable(T::Array[T.any(
         Entry::Namespace,
-        Entry::Alias,
-        Entry::UnresolvedAlias,
+        Entry::ConstantAlias,
+        Entry::UnresolvedConstantAlias,
       )]))
     end
     def lookup_enclosing_scopes(name, nesting, seen_names)
@@ -731,8 +760,8 @@ module RubyIndexer
         seen_names: T::Array[String],
       ).returns(T.nilable(T::Array[T.any(
         Entry::Namespace,
-        Entry::Alias,
-        Entry::UnresolvedAlias,
+        Entry::ConstantAlias,
+        Entry::UnresolvedConstantAlias,
       )]))
     end
     def lookup_ancestor_chain(name, nesting, seen_names)
@@ -792,8 +821,8 @@ module RubyIndexer
       ).returns(
         T.nilable(T::Array[T.any(
           Entry::Namespace,
-          Entry::Alias,
-          Entry::UnresolvedAlias,
+          Entry::ConstantAlias,
+          Entry::UnresolvedConstantAlias,
         )]),
       )
     end
@@ -801,11 +830,11 @@ module RubyIndexer
       entries = @entries[full_name] || @entries[follow_aliased_namespace(full_name)]
 
       T.cast(
-        entries&.map { |e| e.is_a?(Entry::UnresolvedAlias) ? resolve_alias(e, seen_names) : e },
+        entries&.map { |e| e.is_a?(Entry::UnresolvedConstantAlias) ? resolve_alias(e, seen_names) : e },
         T.nilable(T::Array[T.any(
           Entry::Namespace,
-          Entry::Alias,
-          Entry::UnresolvedAlias,
+          Entry::ConstantAlias,
+          Entry::UnresolvedConstantAlias,
         )]),
       )
     end

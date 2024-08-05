@@ -13,11 +13,11 @@ module RubyLsp
           global_state: GlobalState,
           node_context: NodeContext,
           dispatcher: Prism::Dispatcher,
-          typechecker_enabled: T::Boolean,
+          sorbet_level: Document::SorbetLevel,
         ).void
       end
-      def initialize(response_builder, global_state, node_context, dispatcher, typechecker_enabled)
-        @typechecker_enabled = typechecker_enabled
+      def initialize(response_builder, global_state, node_context, dispatcher, sorbet_level)
+        @sorbet_level = sorbet_level
         @response_builder = response_builder
         @global_state = global_state
         @index = T.let(global_state.index, RubyIndexer::Index)
@@ -28,7 +28,7 @@ module RubyLsp
 
       sig { params(node: Prism::CallNode).void }
       def on_call_node_enter(node)
-        return if @typechecker_enabled
+        return if sorbet_level_true_or_higher?(@sorbet_level)
 
         message = node.message
         return unless message
@@ -36,7 +36,7 @@ module RubyLsp
         type = @type_inferrer.infer_receiver_type(@node_context)
         return unless type
 
-        methods = @index.resolve_method(message, type)
+        methods = @index.resolve_method(message, type.name)
         return unless methods
 
         target_method = methods.first
@@ -61,6 +61,13 @@ module RubyLsp
           active_parameter += 1
         end
 
+        title = +""
+
+        extra_links = if type.is_a?(TypeInferrer::GuessedType)
+          title << "\n\nGuessed receiver: #{type.name}"
+          "[Learn more about guessed types](#{GUESSED_TYPES_URL})"
+        end
+
         signature_help = Interface::SignatureHelp.new(
           signatures: [
             Interface::SignatureInformation.new(
@@ -68,7 +75,7 @@ module RubyLsp
               parameters: parameters.map { |param| Interface::ParameterInformation.new(label: param.name) },
               documentation: Interface::MarkupContent.new(
                 kind: "markdown",
-                value: markdown_from_index_entries("", methods),
+                value: markdown_from_index_entries(title, methods, extra_links: extra_links),
               ),
             ),
           ],

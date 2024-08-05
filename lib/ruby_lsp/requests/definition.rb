@@ -30,16 +30,22 @@ module RubyLsp
       extend T::Sig
       extend T::Generic
 
+      SPECIAL_METHOD_CALLS = [
+        :require,
+        :require_relative,
+        :autoload,
+      ].freeze
+
       sig do
         params(
           document: Document,
           global_state: GlobalState,
           position: T::Hash[Symbol, T.untyped],
           dispatcher: Prism::Dispatcher,
-          typechecker_enabled: T::Boolean,
+          sorbet_level: Document::SorbetLevel,
         ).void
       end
-      def initialize(document, global_state, position, dispatcher, typechecker_enabled)
+      def initialize(document, global_state, position, dispatcher, sorbet_level)
         super()
         @response_builder = T.let(
           ResponseBuilders::CollectionResponseBuilder[T.any(Interface::Location, Interface::LocationLink)].new,
@@ -78,8 +84,9 @@ module RubyLsp
             parent,
             position,
           )
-        elsif target.is_a?(Prism::CallNode) && target.name != :require && target.name != :require_relative &&
-            !covers_position?(target.message_loc, position)
+        elsif target.is_a?(Prism::CallNode) && !SPECIAL_METHOD_CALLS.include?(target.message) && !covers_position?(
+          target.message_loc, position
+        )
           # If the target is a method call, we need to ensure that the requested position is exactly on top of the
           # method identifier. Otherwise, we risk showing definitions for unrelated things
           target = nil
@@ -96,7 +103,7 @@ module RubyLsp
             document.uri,
             node_context,
             dispatcher,
-            typechecker_enabled,
+            sorbet_level,
           )
 
           Addon.addons.each do |addon|

@@ -181,20 +181,20 @@ module RubyIndexer
 
     def test_resolving_aliases_to_non_existing_constants_with_conflicting_names
       @index.index_single(IndexablePath.new("/fake", "/fake/path/foo.rb"), <<~RUBY)
-        class Float
+        class Bar
         end
 
         module Foo
-          class Float < self
-            INFINITY = ::Float::INFINITY
+          class Bar < self
+            BAZ = ::Bar::BAZ
           end
         end
       RUBY
 
-      entry = @index.resolve("INFINITY", ["Foo", "Float"]).first
+      entry = @index.resolve("BAZ", ["Foo", "Bar"]).first
       refute_nil(entry)
 
-      assert_instance_of(Entry::UnresolvedAlias, entry)
+      assert_instance_of(Entry::UnresolvedConstantAlias, entry)
     end
 
     def test_visitor_does_not_visit_unnecessary_nodes
@@ -1015,11 +1015,11 @@ module RubyIndexer
 
       foo_entry = T.must(@index.resolve("FOO", ["Namespace"])&.first)
       assert_equal(2, foo_entry.location.start_line)
-      assert_instance_of(Entry::Alias, foo_entry)
+      assert_instance_of(Entry::ConstantAlias, foo_entry)
 
       bar_entry = T.must(@index.resolve("BAR", ["Namespace"])&.first)
       assert_equal(3, bar_entry.location.start_line)
-      assert_instance_of(Entry::Alias, bar_entry)
+      assert_instance_of(Entry::ConstantAlias, bar_entry)
     end
 
     def test_resolving_circular_alias_three_levels
@@ -1033,15 +1033,15 @@ module RubyIndexer
 
       foo_entry = T.must(@index.resolve("FOO", ["Namespace"])&.first)
       assert_equal(2, foo_entry.location.start_line)
-      assert_instance_of(Entry::Alias, foo_entry)
+      assert_instance_of(Entry::ConstantAlias, foo_entry)
 
       bar_entry = T.must(@index.resolve("BAR", ["Namespace"])&.first)
       assert_equal(3, bar_entry.location.start_line)
-      assert_instance_of(Entry::Alias, bar_entry)
+      assert_instance_of(Entry::ConstantAlias, bar_entry)
 
       baz_entry = T.must(@index.resolve("BAZ", ["Namespace"])&.first)
       assert_equal(4, baz_entry.location.start_line)
-      assert_instance_of(Entry::Alias, baz_entry)
+      assert_instance_of(Entry::ConstantAlias, baz_entry)
     end
 
     def test_resolving_constants_in_aliased_namespace
@@ -1542,6 +1542,21 @@ module RubyIndexer
       assert_empty(@index.method_completion_candidates("bar", "Foo"))
     end
 
+    def test_first_unqualified_const
+      index(<<~RUBY)
+        module Foo
+          class Bar; end
+        end
+
+        module Baz
+          class Bar; end
+        end
+      RUBY
+
+      entry = T.must(@index.first_unqualified_const("Bar")&.first)
+      assert_equal("Foo::Bar", entry.name)
+    end
+
     def test_completion_does_not_duplicate_overridden_methods
       index(<<~RUBY)
         class Foo
@@ -1749,6 +1764,63 @@ module RubyIndexer
       assert_raises(Index::NonExistingNamespaceError) do
         @index.linearized_ancestors_of("A::<Class:A>")
       end
+    end
+
+    def test_linearizing_singleton_parent_class_with_namespace
+      index(<<~RUBY)
+        class ActiveRecord::Base; end
+
+        class User < ActiveRecord::Base
+        end
+      RUBY
+
+      assert_equal(
+        [
+          "User::<Class:User>",
+          "ActiveRecord::Base::<Class:Base>",
+          "Object::<Class:Object>",
+          "BasicObject::<Class:BasicObject>",
+          "Class",
+          "Module",
+          "Object",
+          "Kernel",
+          "BasicObject",
+        ],
+        @index.linearized_ancestors_of("User::<Class:User>"),
+      )
+    end
+
+    def test_singleton_nesting_is_correctly_split_during_linearization
+      index(<<~RUBY)
+        module Bar; end
+
+        module Foo
+          class Namespace::Parent
+            extend Bar
+          end
+        end
+
+        module Foo
+          class Child < Namespace::Parent
+          end
+        end
+      RUBY
+
+      assert_equal(
+        [
+          "Foo::Child::<Class:Child>",
+          "Foo::Namespace::Parent::<Class:Parent>",
+          "Bar",
+          "Object::<Class:Object>",
+          "BasicObject::<Class:BasicObject>",
+          "Class",
+          "Module",
+          "Object",
+          "Kernel",
+          "BasicObject",
+        ],
+        @index.linearized_ancestors_of("Foo::Child::<Class:Child>"),
+      )
     end
   end
 end

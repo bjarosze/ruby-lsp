@@ -21,9 +21,10 @@ module RubyLsp
       class << self
         extend T::Sig
 
-        sig { returns(Interface::DocumentOnTypeFormattingOptions) }
+        sig { returns(Interface::DocumentOnTypeFormattingRegistrationOptions) }
         def provider
-          Interface::DocumentOnTypeFormattingOptions.new(
+          Interface::DocumentOnTypeFormattingRegistrationOptions.new(
+            document_selector: [Interface::DocumentFilter.new(language: "ruby")],
             first_trigger_character: "{",
             more_trigger_character: ["\n", "|", "d"],
           )
@@ -32,8 +33,9 @@ module RubyLsp
 
       END_REGEXES = T.let(
         [
-          /\b(if|unless|for|while|class|module|until|def|case)\b.*/,
-          /.*\s\bdo\b/,
+          /\b(if|unless|for|while|until)\b($|\s|\()/,
+          /\b(class|module|def|case)\b($|\s)/,
+          /.*\s\bdo\b($|\s)/,
         ],
         T::Array[Regexp],
       )

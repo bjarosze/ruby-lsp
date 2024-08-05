@@ -21,6 +21,7 @@ import {
   ErrorAction,
   CloseAction,
   State,
+  DocumentFilter,
 } from "vscode-languageclient/node";
 
 import {
@@ -119,7 +120,7 @@ function collectClientOptions(
   const enabledFeatures = Object.keys(features).filter((key) => features[key]);
 
   const fsPath = workspaceFolder.uri.fsPath.replace(/\/$/, "");
-  const documentSelector: DocumentSelector = SUPPORTED_LANGUAGE_IDS.map(
+  let documentSelector: DocumentSelector = SUPPORTED_LANGUAGE_IDS.map(
     (language) => {
       return { language, pattern: `${fsPath}/**/*` };
     },
@@ -158,6 +159,14 @@ function collectClientOptions(
     });
   }
 
+  // This is a temporary solution as an escape hatch for users who cannot upgrade the `ruby-lsp` gem to a version that
+  // supports ERB
+  if (!configuration.get<boolean>("erbSupport")) {
+    documentSelector = documentSelector.filter((selector) => {
+      return (selector as DocumentFilter).language !== "erb";
+    });
+  }
+
   return {
     documentSelector,
     workspaceFolder,
@@ -174,6 +183,7 @@ function collectClientOptions(
       featuresConfiguration: configuration.get("featuresConfiguration"),
       formatter: configuration.get("formatter"),
       linters: configuration.get("linters"),
+      indexing: configuration.get("indexing"),
     },
   };
 }
@@ -328,35 +338,37 @@ export default class Client extends LanguageClient implements ClientInterface {
       this.logResponseTime(bench.duration, request);
       return result;
     } catch (error: any) {
-      if (
-        this.baseFolder === "ruby-lsp" ||
-        this.baseFolder === "ruby-lsp-rails"
-      ) {
-        await vscode.window.showErrorMessage(
-          `Ruby LSP error ${error.data.errorClass}: ${error.data.errorMessage}\n\n${error.data.backtrace}`,
-        );
-      } else if (error.data) {
-        const { errorMessage, errorClass, backtrace } = error.data;
-
-        if (errorMessage && errorClass && backtrace) {
-          // Sanitize the backtrace coming from the server to remove the user's home directory from it, then mark it as
-          // a trusted value. Otherwise the VS Code telemetry logger redacts the entire backtrace and we are unable to
-          // see where in the server the error occurred
-          const stack = new vscode.TelemetryTrustedValue(
-            backtrace
-              .split("\n")
-              .map((line: string) => line.replace(os.homedir(), "~"))
-              .join("\n"),
-          ) as any;
-
-          this.telemetry.logError(
-            {
-              message: errorMessage,
-              name: errorClass,
-              stack,
-            },
-            { ...error.data, serverVersion: this.serverVersion },
+      if (error.data) {
+        if (
+          this.baseFolder === "ruby-lsp" ||
+          this.baseFolder === "ruby-lsp-rails"
+        ) {
+          await vscode.window.showErrorMessage(
+            `Ruby LSP error ${error.data.errorClass}: ${error.data.errorMessage}\n\n${error.data.backtrace}`,
           );
+        } else {
+          const { errorMessage, errorClass, backtrace } = error.data;
+
+          if (errorMessage && errorClass && backtrace) {
+            // Sanitize the backtrace coming from the server to remove the user's home directory from it, then mark it
+            // as a trusted value. Otherwise the VS Code telemetry logger redacts the entire backtrace and we are unable
+            // to see where in the server the error occurred
+            const stack = new vscode.TelemetryTrustedValue(
+              backtrace
+                .split("\n")
+                .map((line: string) => line.replace(os.homedir(), "~"))
+                .join("\n"),
+            ) as any;
+
+            this.telemetry.logError(
+              {
+                message: errorMessage,
+                name: errorClass,
+                stack,
+              },
+              { ...error.data, serverVersion: this.serverVersion },
+            );
+          }
         }
       }
 

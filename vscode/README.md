@@ -20,6 +20,7 @@ The Ruby LSP features include
 - Showing documentaton on hover for classes, modules and constants
 - Completion for classes, modules, constants and require paths
 - Fuzzy search classes, modules and constants anywhere in the project and its dependencies (workspace symbol)
+- Running Rails generators from the UI
 
 Adding method support for definition, completion, hover and workspace symbol is planned, but not yet completed.
 
@@ -245,7 +246,7 @@ These are the settings that may impact the Ruby LSP's behavior and their explana
     "editor.defaultFormatter": "Shopify.ruby-lsp", // Use the Ruby LSP as the default formatter
     "editor.formatOnSave": true, // Format files automatically when saving
     "editor.tabSize": 2, // Use 2 spaces for indentation
-    "editor.insertSpaces": true, // Use spaces and not tabs for indentantion
+    "editor.insertSpaces": true, // Use spaces and not tabs for indentation
     "editor.semanticHighlighting.enabled": true, // Enable semantic highlighting
     "editor.formatOnType": true, // Enable formatting while typing
   },
@@ -261,7 +262,7 @@ the frontend and backend directories to be different workspaces.
 
 The advantage of adopting this configuration is that VS Code and all extensions are informed about which directories
 should be considered as possible workspace roots. Instead of having to configure each extension or tool individually so
-that are aware of your project structure, you only have to do that once for the entire repository.
+they are aware of your project structure, you only have to do that once for the entire repository.
 
 Some examples of functionality that benefits from multi-root workspaces:
 
@@ -282,7 +283,7 @@ repository is.
 
 #### Example configurations
 
-> ![NOTE]
+> [!NOTE]
 > To make sure Ruby LSP works well with your multi-root workspace project, please
 > read through the instructions below and configure it following the examples.
 > After configuring, do not forget to tell VS Code to open the workspace from the
@@ -439,3 +440,20 @@ When `rubyLsp.formatter` is set to `auto`, Ruby LSP tries to determine which for
 If the bundle has a **direct** dependency on a supported formatter, such as `rubocop` or `syntax_tree`, that will be used.
 Otherwise, formatting will be disabled and you will need add one to the bundle. Using globally installed formatters or
 linters is not supported, they must in your Gemfile or gemspec.
+
+## Indexing Configuration
+
+To configure indexing, pass a JSON hash as part of the Ruby LSP configuration, for example:
+
+```jsonc
+// PROJECT/.vscode/settings.json
+{
+  "rubyLsp.indexing": {
+    "excludedPatterns": ["**/test/**.rb"],
+    "includedPatterns": ["**/bin/**"],
+    "excludedGems": ["rubocop", "rubocop-performance"],
+    "includedPatterns": ["rake"],
+    "excludedMagicComments": ["compiled:true"],
+  },
+}
+```
