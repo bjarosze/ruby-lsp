@@ -68,6 +68,8 @@ module RubyLsp
         text_document_signature_help(message)
       when "textDocument/definition"
         text_document_definition(message)
+      when "textDocument/didSave"
+        text_document_did_save(message)
       when "textDocument/prepareTypeHierarchy"
         text_document_prepare_type_hierarchy(message)
       when "typeHierarchy/supertypes"
@@ -183,6 +185,7 @@ module RubyLsp
           text_document_sync: Interface::TextDocumentSyncOptions.new(
             change: Constant::TextDocumentSyncKind::INCREMENTAL,
             open_close: true,
+            save: true,
           ),
           position_encoding: @global_state.encoding_name,
           selection_range_provider: enabled_features["selectionRanges"],
@@ -637,6 +640,22 @@ module RubyLsp
           ).perform,
         ),
       )
+    end
+
+    sig { params(message: T::Hash[Symbol, T.untyped]).void }
+    def text_document_did_save(message)
+      params = message[:params]
+      uri = URI(params[:textDocument][:uri])
+
+      file_path = uri.to_standardized_path
+      return if file_path.nil? || File.directory?(file_path)
+
+      index = @global_state.index
+      load_path_entry = $LOAD_PATH.find { |load_path| file_path.start_with?(load_path) }
+      indexable = RubyIndexer::IndexablePath.new(load_path_entry, file_path)
+
+      index.delete(indexable)
+      index.index_single(indexable)
     end
 
     sig { params(message: T::Hash[Symbol, T.untyped]).void }
