@@ -16,6 +16,8 @@ import { newMinitestFile, openFile, openUris } from "./commands";
 import { Debugger } from "./debugger";
 import { DependenciesTree } from "./dependenciesTree";
 import { Rails } from "./rails";
+import { ChatAgent } from "./chatAgent";
+import { collectRubyLspInfo } from "./infoCollector";
 
 // The RubyLsp class represents an instance of the entire extension. This should only be instantiated once at the
 // activation event. One instance of this class controls all of the existing workspaces, telemetry and handles all
@@ -50,6 +52,7 @@ export class RubyLsp {
       this.statusItems,
       this.debug,
       dependenciesTree,
+      new ChatAgent(context, this.showWorkspacePick.bind(this)),
 
       // Switch the status items based on which workspace is currently active
       vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -457,7 +460,7 @@ export class RubyLsp {
       vscode.commands.registerCommand(
         Command.RailsGenerate,
         async (
-          generatorWithArguments: string | undefined,
+          generatorWithArguments: string | string[] | undefined,
           workspace: Workspace | undefined,
         ) => {
           // If the command was invoked programmatically, then the arguments will already be present. Otherwise, we need
@@ -474,13 +477,20 @@ export class RubyLsp {
             return;
           }
 
-          await this.rails.generate(command, workspace);
+          if (typeof command === "string") {
+            await this.rails.generate(command, workspace);
+            return;
+          }
+
+          for (const generate of command) {
+            await this.rails.generate(generate, workspace);
+          }
         },
       ),
       vscode.commands.registerCommand(
         Command.RailsDestroy,
         async (
-          generatorWithArguments: string | undefined,
+          generatorWithArguments: string | string[] | undefined,
           workspace: Workspace | undefined,
         ) => {
           // If the command was invoked programmatically, then the arguments will already be present. Otherwise, we need
@@ -497,7 +507,14 @@ export class RubyLsp {
             return;
           }
 
-          await this.rails.destroy(command, workspace);
+          if (typeof command === "string") {
+            await this.rails.destroy(command, workspace);
+            return;
+          }
+
+          for (const generate of command) {
+            await this.rails.destroy(generate, workspace);
+          }
         },
       ),
       vscode.commands.registerCommand(Command.FileOperation, async () => {
@@ -554,6 +571,10 @@ export class RubyLsp {
         await vscode.commands.executeCommand(pick.command, ...pick.args);
       }),
       vscode.commands.registerCommand(Command.NewMinitestFile, newMinitestFile),
+      vscode.commands.registerCommand(Command.CollectRubyLspInfo, async () => {
+        const workspace = await this.showWorkspacePick();
+        await collectRubyLspInfo(workspace);
+      }),
     );
   }
 

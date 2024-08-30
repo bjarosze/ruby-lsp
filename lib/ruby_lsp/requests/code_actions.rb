@@ -21,6 +21,7 @@ module RubyLsp
 
       EXTRACT_TO_VARIABLE_TITLE = "Refactor: Extract Variable"
       EXTRACT_TO_METHOD_TITLE = "Refactor: Extract Method"
+      TOGGLE_BLOCK_STYLE_TITLE = "Refactor: Toggle block style"
 
       class << self
         extend T::Sig
@@ -36,7 +37,7 @@ module RubyLsp
 
       sig do
         params(
-          document: Document,
+          document: T.any(RubyDocument, ERBDocument),
           range: T::Hash[Symbol, T.untyped],
           context: T::Hash[Symbol, T.untyped],
         ).void
@@ -67,6 +68,11 @@ module RubyLsp
           code_actions << Interface::CodeAction.new(
             title: EXTRACT_TO_METHOD_TITLE,
             kind: Constant::CodeActionKind::REFACTOR_EXTRACT,
+            data: { range: @range, uri: @uri.to_s },
+          )
+          code_actions << Interface::CodeAction.new(
+            title: TOGGLE_BLOCK_STYLE_TITLE,
+            kind: Constant::CodeActionKind::REFACTOR_REWRITE,
             data: { range: @range, uri: @uri.to_s },
           )
         end

@@ -40,6 +40,54 @@ If your version manager doesn't provide either of those, then activate the envir
 These strategies will ensure that the `ruby-lsp` executable is invoked with the correct Ruby version, `GEM_HOME` and
 `GEM_PATH`, which are necessary for proper integration with your project.
 
+## All initialization options
+
+Each LSP client can control various abilities of the LSP at startup. The following JSON dictionary contains all of the
+available initialization options. Generally, editor LSP clients will configure LSP servers using a dictionary in their
+configuration languages (JSON, Lua, ELisp, etc.).
+
+```json
+{
+  "initializationOptions": {
+    "enabledFeatures": {
+      "codeActions": true,
+      "codeLens": true,
+      "completion": true,
+      "definition": true,
+      "diagnostics": true,
+      "documentHighlights": true,
+      "documentLink": true,
+      "documentSymbols": true,
+      "foldingRanges": true,
+      "formatting": true,
+      "hover": true,
+      "inlayHint": true,
+      "onTypeFormatting": true,
+      "selectionRanges": true,
+      "semanticHighlighting": true,
+      "signatureHelp": true,
+      "typeHierarchy": true,
+      "workspaceSymbol": true
+    },
+    "featuresConfiguration": {
+      "inlayHint": {
+        "implicitHashValue": true,
+        "implicitRescue": true
+      }
+    },
+    "indexing": {
+      "excludedPatterns": ["path/to/excluded/file.rb"],
+      "includedPatterns": ["path/to/included/file.rb"],
+      "excludedGems": ["gem1", "gem2", "etc."],
+      "excludedMagicComments": ["compiled:true"]
+    },
+    "formatter": "auto",
+    "linters": [],
+    "experimentalFeaturesEnabled": false
+  }
+}
+```
+
 <!-- When adding a new editor to the list, either link directly to a website containing the instructions or link to a
 new H2 header in this file containing the instructions. -->
 
@@ -50,6 +98,7 @@ new H2 header in this file containing the instructions. -->
 - [Sublime Text LSP](#sublime-text-lsp)
 - [Zed](#zed)
 - [RubyMine](#RubyMine)
+- [Kate](#Kate)
 
 ## Emacs Eglot
 
@@ -70,6 +119,22 @@ When you run `eglot` command it will run `ruby-lsp` process for you.
 
 The [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/blob/master/lua/lspconfig/server_configurations/ruby_lsp.lua)
 plugin has support for Ruby LSP.
+
+The Ruby LSP can be configured using the `init_options` key when setting up the LSP.
+
+A great example of this configuration style is enabling the Standard add-on for
+the Ruby LSP to enable formatting and pull-style diagnostics. The following snippet
+enables `standard` for both formatting and pull-diagnostic linting.
+
+```lua
+local lspconfig = require('lspconfig')
+lspconfig.ruby_lsp.setup({
+  init_options = {
+    formatter = 'standard',
+    linters = { 'standard' },
+  },
+})
+```
 
 ### Mason
 
@@ -154,7 +219,7 @@ return {
       servers = {
         ruby_lsp = {
           mason = false,
-          cmd = { "/Users/username/.asdf/shims/ruby-lsp" },
+          cmd = { vim.fn.expand "~/.asdf/shims/ruby-lsp" },
         },
       },
     },
@@ -202,18 +267,22 @@ Note that there might be overlapping functionality when using it with RubyMine, 
 
 [Ruby LSP plugin](https://plugins.jetbrains.com/plugin/24413-ruby-lsp)
 
-# Indexing Configuration
+## Kate
 
-To configure indexing, pass a JSON hash as part of the initialization options for your editor, for example:
+[The LSP Client Plugin](https://docs.kde.org/stable5/en/kate/kate/kate-application-plugin-lspclient.html) for Kate is configured by default to use Solargraph for Ruby.
+To use it with Ruby LSP, you can override particular configuration items in the "User Server Settings" in the LSP Client plugin as shown below:
 
 ```json
 {
-  "indexing": {
-    "excludedPatterns": ["**/test/**.rb"],
-    "includedPatterns": ["**/bin/**"],
-    "excludedGems": ["rubocop", "rubocop-performance"],
-    "includedPatterns": ["rake"],
-    "excludedMagicComments": ["compiled:true"]
+  "servers": {
+    "ruby": {
+      "command": ["ruby-lsp"],
+      "url": "https://github.com/Shopify/ruby-lsp"
+    }
   }
 }
 ```
+
+Kate will start an instance of the Ruby LSP server in the background for any Ruby project matching the `rootIndicationFileNames`.
+If starting Ruby LSP succeeds, the entries in the LSP-Client menu are activated.
+Otherwise the error output can be inspected in the Output window.

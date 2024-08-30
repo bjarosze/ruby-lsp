@@ -20,7 +20,7 @@ module RubyLsp
           uri: URI::Generic,
           node_context: NodeContext,
           dispatcher: Prism::Dispatcher,
-          sorbet_level: Document::SorbetLevel,
+          sorbet_level: RubyDocument::SorbetLevel,
         ).void
       end
       def initialize(response_builder, global_state, language_id, uri, node_context, dispatcher, sorbet_level) # rubocop:disable Metrics/ParameterLists
@@ -181,7 +181,7 @@ module RubyLsp
       def handle_instance_variable_definition(name)
         # Sorbet enforces that all instance variables be declared on typed strict or higher, which means it will be able
         # to provide all features for them
-        return if @sorbet_level == Document::SorbetLevel::Strict
+        return if @sorbet_level == RubyDocument::SorbetLevel::Strict
 
         type = @type_inferrer.infer_receiver_type(@node_context)
         return unless type
@@ -208,10 +208,13 @@ module RubyLsp
       def handle_method_definition(message, receiver_type, inherited_only: false)
         methods = if receiver_type
           @index.resolve_method(message, receiver_type.name, inherited_only: inherited_only)
-        else
-          # If the method doesn't have a receiver, then we provide a few candidates to jump to
-          # But we don't want to provide too many candidates, as it can be overwhelming
-          @index[message]&.take(MAX_NUMBER_OF_DEFINITION_CANDIDATES_WITHOUT_RECEIVER)
+        end
+
+        # If the method doesn't have a receiver, or the guessed receiver doesn't have any matched candidates,
+        # then we provide a few candidates to jump to
+        # But we don't want to provide too many candidates, as it can be overwhelming
+        if receiver_type.nil? || (receiver_type.is_a?(TypeInferrer::GuessedType) && methods.nil?)
+          methods = @index[message]&.take(MAX_NUMBER_OF_DEFINITION_CANDIDATES_WITHOUT_RECEIVER)
         end
 
         return unless methods
@@ -250,7 +253,7 @@ module RubyLsp
         when :require_relative
           required_file = "#{node.content}.rb"
           path = @uri.to_standardized_path
-          current_folder = path ? Pathname.new(CGI.unescape(path)).dirname : Dir.pwd
+          current_folder = path ? Pathname.new(CGI.unescape(path)).dirname : @global_state.workspace_path
           candidate = File.expand_path(File.join(current_folder, required_file))
 
           @response_builder << Interface::Location.new(
@@ -289,7 +292,7 @@ module RubyLsp
           # additional behavior on top of jumping to RBIs. The only sigil where Sorbet cannot handle constants is typed
           # ignore
           file_path = entry.file_path
-          next if @sorbet_level != Document::SorbetLevel::Ignore && not_in_dependencies?(file_path)
+          next if @sorbet_level != RubyDocument::SorbetLevel::Ignore && not_in_dependencies?(file_path)
 
           @response_builder << Interface::LocationLink.new(
             target_uri: URI::Generic.from_path(path: file_path).to_s,

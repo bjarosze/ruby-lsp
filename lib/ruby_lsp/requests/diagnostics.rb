@@ -32,7 +32,7 @@ module RubyLsp
         end
       end
 
-      sig { params(global_state: GlobalState, document: Document).void }
+      sig { params(global_state: GlobalState, document: RubyDocument).void }
       def initialize(global_state, document)
         super()
         @active_linters = T.let(global_state.active_linters, T::Array[Support::Formatter])
@@ -46,7 +46,9 @@ module RubyLsp
         diagnostics.concat(syntax_error_diagnostics, syntax_warning_diagnostics)
 
         # Running RuboCop is slow, so to avoid excessive runs we only do so if the file is syntactically valid
-        return diagnostics if @document.syntax_error? || @active_linters.empty?
+        if @document.syntax_error? || @active_linters.empty? || @document.past_expensive_limit?
+          return diagnostics
+        end
 
         @active_linters.each do |linter|
           linter_diagnostics = linter.run_diagnostic(@uri, @document)

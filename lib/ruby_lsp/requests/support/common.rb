@@ -37,15 +37,6 @@ module RubyLsp
           )
         end
 
-        sig { params(node: T.nilable(Prism::Node), range: T.nilable(T::Range[Integer])).returns(T::Boolean) }
-        def visible?(node, range)
-          return true if range.nil?
-          return false if node.nil?
-
-          loc = node.location
-          range.cover?(loc.start_line - 1) && range.cover?(loc.end_line - 1)
-        end
-
         sig do
           params(
             node: Prism::Node,
@@ -209,9 +200,9 @@ module RubyLsp
           end
         end
 
-        sig { params(sorbet_level: Document::SorbetLevel).returns(T::Boolean) }
+        sig { params(sorbet_level: RubyDocument::SorbetLevel).returns(T::Boolean) }
         def sorbet_level_true_or_higher?(sorbet_level)
-          sorbet_level == Document::SorbetLevel::True || sorbet_level == Document::SorbetLevel::Strict
+          sorbet_level == RubyDocument::SorbetLevel::True || sorbet_level == RubyDocument::SorbetLevel::Strict
         end
       end
     end

@@ -20,7 +20,13 @@ class SemanticHighlightingExpectationsTest < ExpectationsTestRunner
     dispatcher = Prism::Dispatcher.new
     global_state = RubyLsp::GlobalState.new
     global_state.apply_options({})
-    listener = RubyLsp::Requests::SemanticHighlighting.new(global_state, dispatcher, range: processed_range)
+    listener = RubyLsp::Requests::SemanticHighlighting.new(
+      global_state,
+      dispatcher,
+      document,
+      nil,
+      range: processed_range,
+    )
 
     dispatcher.dispatch(document.parse_result.value)
     listener.perform
@@ -58,17 +64,13 @@ class SemanticHighlightingExpectationsTest < ExpectationsTestRunner
           decoded_response[0],
         )
         assert_equal(
-          { delta_line: 0, delta_start_char: 0, length: 4, token_type: 0, token_modifiers: 0 },
-          decoded_response[1],
-        )
-        assert_equal(
           { delta_line: 1, delta_start_char: 2, length: 13, token_type: 13, token_modifiers: 0 },
-          decoded_response[2],
+          decoded_response[1],
         )
         # This is the token modified by the addon
         assert_equal(
           { delta_line: 1, delta_start_char: 2, length: 13, token_type: 15, token_modifiers: 1 },
-          decoded_response[3],
+          decoded_response[2],
         )
       end
     ensure

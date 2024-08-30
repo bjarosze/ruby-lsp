@@ -43,13 +43,14 @@ module RubyLsp
       @gemfile_name = T.let(@gemfile&.basename&.to_s || "Gemfile", String)
 
       # Custom bundle paths
-      @custom_dir = T.let(Pathname.new(".ruby-lsp").expand_path(Dir.pwd), Pathname)
+      @custom_dir = T.let(Pathname.new(".ruby-lsp").expand_path(@project_path), Pathname)
       @custom_gemfile = T.let(@custom_dir + @gemfile_name, Pathname)
       @custom_lockfile = T.let(@custom_dir + (@lockfile&.basename || "Gemfile.lock"), Pathname)
       @lockfile_hash_path = T.let(@custom_dir + "main_lockfile_hash", Pathname)
       @last_updated_path = T.let(@custom_dir + "last_updated", Pathname)
 
       @dependencies = T.let(load_dependencies, T::Hash[String, T.untyped])
+      @rails_app = T.let(rails_app?, T::Boolean)
       @retry = T.let(false, T::Boolean)
     end
 
@@ -62,7 +63,7 @@ module RubyLsp
       # Do not set up a custom bundle if LSP dependencies are already in the Gemfile
       if @dependencies["ruby-lsp"] &&
           @dependencies["debug"] &&
-          (@dependencies["rails"] ? @dependencies["ruby-lsp-rails"] : true)
+          (@rails_app ? @dependencies["ruby-lsp-rails"] : true)
         $stderr.puts(
           "Ruby LSP> Skipping custom bundle setup since LSP dependencies are already in #{@gemfile}",
         )
@@ -148,7 +149,7 @@ module RubyLsp
         parts << 'gem "debug", require: false, group: :development, platforms: :mri'
       end
 
-      if @dependencies["rails"] && !@dependencies["ruby-lsp-rails"]
+      if @rails_app && !@dependencies["ruby-lsp-rails"]
         parts << 'gem "ruby-lsp-rails", require: false, group: :development'
       end
 
@@ -182,14 +183,14 @@ module RubyLsp
       # `.ruby-lsp` folder, which is not the user's intention. For example, if the path is configured as `vendor`, we
       # want to install it in the top level `vendor` and not `.ruby-lsp/vendor`
       path = Bundler.settings["path"]
-      expanded_path = File.expand_path(path, Dir.pwd) if path
+      expanded_path = File.expand_path(path, @project_path) if path
 
       # Use the absolute `BUNDLE_PATH` to prevent accidentally creating unwanted folders under `.ruby-lsp`
       env = {}
       env["BUNDLE_GEMFILE"] = bundle_gemfile.to_s
       env["BUNDLE_PATH"] = expanded_path if expanded_path
 
-      local_config_path = File.join(Dir.pwd, ".bundle")
+      local_config_path = File.join(@project_path, ".bundle")
       env["BUNDLE_APP_CONFIG"] = local_config_path if Dir.exist?(local_config_path)
 
       # If `ruby-lsp` and `debug` (and potentially `ruby-lsp-rails`) are already in the Gemfile, then we shouldn't try
@@ -209,7 +210,7 @@ module RubyLsp
         command << " && bundle update "
         command << "ruby-lsp " unless @dependencies["ruby-lsp"]
         command << "debug " unless @dependencies["debug"]
-        command << "ruby-lsp-rails " if @dependencies["rails"] && !@dependencies["ruby-lsp-rails"]
+        command << "ruby-lsp-rails " if @rails_app && !@dependencies["ruby-lsp-rails"]
         command << "--pre" if @experimental
         command.delete_suffix!(" ")
         command << ")"
@@ -244,7 +245,7 @@ module RubyLsp
     def should_bundle_update?
       # If `ruby-lsp`, `ruby-lsp-rails` and `debug` are in the Gemfile, then we shouldn't try to upgrade them or else it
       # will produce version control changes
-      if @dependencies["rails"]
+      if @rails_app
         return false if @dependencies.values_at("ruby-lsp", "ruby-lsp-rails", "debug").all?
 
         # If the custom lockfile doesn't include `ruby-lsp`, `ruby-lsp-rails` or `debug`, we need to run bundle install
@@ -279,6 +280,16 @@ module RubyLsp
       end
 
       @custom_lockfile.write(content)
+    end
+
+    # Detects if the project is a Rails app by looking if the superclass of the main class is `Rails::Application`
+    sig { returns(T::Boolean) }
+    def rails_app?
+      config = Pathname.new("config/application.rb").expand_path
+      application_contents = config.read(external_encoding: Encoding::UTF_8) if config.exist?
+      return false unless application_contents
+
+      /class .* < (::)?Rails::Application/.match?(application_contents)
     end
   end
 end

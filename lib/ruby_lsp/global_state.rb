@@ -40,6 +40,12 @@ module RubyLsp
       @supports_watching_files = T.let(false, T::Boolean)
       @experimental_features = T.let(false, T::Boolean)
       @type_inferrer = T.let(TypeInferrer.new(@index, @experimental_features), TypeInferrer)
+      @addon_settings = T.let({}, T::Hash[String, T.untyped])
+    end
+
+    sig { params(addon_name: String).returns(T.nilable(T::Hash[Symbol, T.untyped])) }
+    def settings_for_addon(addon_name)
+      @addon_settings[addon_name]
     end
 
     sig { params(identifier: String, instance: Requests::Support::Formatter).void }
@@ -57,21 +63,48 @@ module RubyLsp
       @linters.filter_map { |name| @supported_formatters[name] }
     end
 
-    sig { params(options: T::Hash[Symbol, T.untyped]).void }
+    # Applies the options provided by the editor and returns an array of notifications to send back to the client
+    sig { params(options: T::Hash[Symbol, T.untyped]).returns(T::Array[Notification]) }
     def apply_options(options)
+      notifications = []
       direct_dependencies = gather_direct_dependencies
       all_dependencies = gather_direct_and_indirect_dependencies
       workspace_uri = options.dig(:workspaceFolders, 0, :uri)
       @workspace_uri = URI(workspace_uri) if workspace_uri
 
       specified_formatter = options.dig(:initializationOptions, :formatter)
-      @formatter = specified_formatter if specified_formatter
-      @formatter = detect_formatter(direct_dependencies, all_dependencies) if @formatter == "auto"
+
+      if specified_formatter
+        @formatter = specified_formatter
+
+        if specified_formatter != "auto"
+          notifications << Notification.window_log_message("Using formatter specified by user: #{@formatter}")
+        end
+      end
+
+      if @formatter == "auto"
+        @formatter = detect_formatter(direct_dependencies, all_dependencies)
+        notifications << Notification.window_log_message("Auto detected formatter: #{@formatter}")
+      end
 
       specified_linters = options.dig(:initializationOptions, :linters)
       @linters = specified_linters || detect_linters(direct_dependencies, all_dependencies)
+
+      notifications << if specified_linters
+        Notification.window_log_message("Using linters specified by user: #{@linters.join(", ")}")
+      else
+        Notification.window_log_message("Auto detected linters: #{@linters.join(", ")}")
+      end
+
       @test_library = detect_test_library(direct_dependencies)
-      @has_type_checker = detect_typechecker(direct_dependencies)
+      notifications << Notification.window_log_message("Detected test library: #{@test_library}")
+
+      @has_type_checker = detect_typechecker(all_dependencies)
+      if @has_type_checker
+        notifications << Notification.window_log_message(
+          "Ruby LSP detected this is a Sorbet project and will defer to the Sorbet LSP for some functionality",
+        )
+      end
 
       encodings = options.dig(:capabilities, :general, :positionEncodings)
       @encoding = if !encodings || encodings.empty?
@@ -91,6 +124,14 @@ module RubyLsp
 
       @experimental_features = options.dig(:initializationOptions, :experimentalFeaturesEnabled) || false
       @type_inferrer.experimental_features = @experimental_features
+
+      addon_settings = options.dig(:initializationOptions, :addonSettings)
+      if addon_settings
+        addon_settings.transform_keys!(&:to_s)
+        @addon_settings.merge!(addon_settings)
+      end
+
+      notifications
     end
 
     sig { returns(String) }
@@ -163,16 +204,7 @@ module RubyLsp
     def detect_typechecker(dependencies)
       return false if ENV["RUBY_LSP_BYPASS_TYPECHECKER"]
 
-      # We can't read the env from within `Bundle.with_original_env` so we need to set it here.
-      ruby_lsp_env_is_test = (ENV["RUBY_LSP_ENV"] == "test")
-      Bundler.with_original_env do
-        sorbet_static_detected = dependencies.any?(/^sorbet-static/)
-        # Don't show message while running tests, since it's noisy
-        if sorbet_static_detected && !ruby_lsp_env_is_test
-          $stderr.puts("Ruby LSP detected this is a Sorbet project so will defer to Sorbet LSP for some functionality")
-        end
-        sorbet_static_detected
-      end
+      dependencies.any?(/^sorbet-static/)
     rescue Bundler::GemfileNotFound
       false
     end

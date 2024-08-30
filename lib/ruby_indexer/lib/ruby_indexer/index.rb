@@ -11,6 +11,9 @@ module RubyIndexer
     # The minimum Jaro-Winkler similarity score for an entry to be considered a match for a given fuzzy search query
     ENTRY_SIMILARITY_THRESHOLD = 0.7
 
+    sig { returns(Configuration) }
+    attr_reader :configuration
+
     sig { void }
     def initialize
       # Holds all entries in the index using the following format:
@@ -35,6 +38,29 @@ module RubyIndexer
 
       # Holds the linearized ancestors list for every namespace
       @ancestors = T.let({}, T::Hash[String, T::Array[String]])
+
+      # List of classes that are enhancing the index
+      @enhancements = T.let([], T::Array[Enhancement])
+
+      # Map of module name to included hooks that have to be executed when we include the given module
+      @included_hooks = T.let(
+        {},
+        T::Hash[String, T::Array[T.proc.params(index: Index, base: Entry::Namespace).void]],
+      )
+
+      @configuration = T.let(RubyIndexer::Configuration.new, Configuration)
+    end
+
+    # Register an enhancement to the index. Enhancements must conform to the `Enhancement` interface
+    sig { params(enhancement: Enhancement).void }
+    def register_enhancement(enhancement)
+      @enhancements << enhancement
+    end
+
+    # Register an included `hook` that will be executed when `module_name` is included into any namespace
+    sig { params(module_name: String, hook: T.proc.params(index: Index, base: Entry::Namespace).void).void }
+    def register_included_hook(module_name, &hook)
+      (@included_hooks[module_name] ||= []) << hook
     end
 
     sig { params(indexable: IndexablePath).void }
@@ -206,7 +232,7 @@ module RubyIndexer
         next unless ancestor_index && (!existing_entry || ancestor_index < existing_entry_index)
 
         if entry.is_a?(Entry::UnresolvedMethodAlias)
-          resolved_alias = resolve_method_alias(entry, receiver_name)
+          resolved_alias = resolve_method_alias(entry, receiver_name, [])
           hash[entry_name] = [resolved_alias, ancestor_index] if resolved_alias.is_a?(Entry::MethodAlias)
         else
           hash[entry_name] = [entry, ancestor_index]
@@ -275,7 +301,7 @@ module RubyIndexer
         block: T.nilable(T.proc.params(progress: Integer).returns(T::Boolean)),
       ).void
     end
-    def index_all(indexable_paths: RubyIndexer.configuration.indexables, &block)
+    def index_all(indexable_paths: @configuration.indexables, &block)
       RBSIndexer.new(self).index_ruby_core
       # Calculate how many paths are worth 1% of progress
       progress_step = (indexable_paths.length / 100.0).ceil
@@ -296,11 +322,25 @@ module RubyIndexer
       dispatcher = Prism::Dispatcher.new
 
       result = Prism.parse(content)
-      DeclarationListener.new(self, dispatcher, result, indexable_path.full_path)
+      listener = DeclarationListener.new(
+        self,
+        dispatcher,
+        result,
+        indexable_path.full_path,
+        enhancements: @enhancements,
+      )
       dispatcher.dispatch(result.value)
+
+      indexing_errors = listener.indexing_errors.uniq
 
       require_path = indexable_path.require_path
       @require_paths_tree.insert(require_path, indexable_path) if require_path
+
+      if indexing_errors.any?
+        indexing_errors.each do |error|
+          $stderr.puts error
+        end
+      end
     rescue Errno::EISDIR, Errno::ENOENT
       # If `path` is a directory, just ignore it and continue indexing. If the file doesn't exist, then we also ignore
       # it
@@ -354,16 +394,18 @@ module RubyIndexer
       real_parts.join("::")
     end
 
-    # Attempts to find methods for a resolved fully qualified receiver name.
+    # Attempts to find methods for a resolved fully qualified receiver name. Do not provide the `seen_names` parameter
+    # as it is used only internally to prevent infinite loops when resolving circular aliases
     # Returns `nil` if the method does not exist on that receiver
     sig do
       params(
         method_name: String,
         receiver_name: String,
+        seen_names: T::Array[String],
         inherited_only: T::Boolean,
       ).returns(T.nilable(T::Array[T.any(Entry::Member, Entry::MethodAlias)]))
     end
-    def resolve_method(method_name, receiver_name, inherited_only: false)
+    def resolve_method(method_name, receiver_name, seen_names = [], inherited_only: false)
       method_entries = self[method_name]
       return unless method_entries
 
@@ -378,7 +420,7 @@ module RubyIndexer
           when Entry::UnresolvedMethodAlias
             # Resolve aliases lazily as we find them
             if entry.owner&.name == ancestor
-              resolved_alias = resolve_method_alias(entry, receiver_name)
+              resolved_alias = resolve_method_alias(entry, receiver_name, seen_names)
               resolved_alias if resolved_alias.is_a?(Entry::MethodAlias)
             end
           end
@@ -456,6 +498,12 @@ module RubyIndexer
           nesting << "<Class:#{T.must(nesting.last)}>"
         end
       end
+
+      # We only need to run included hooks when linearizing singleton classes. Included hooks are typically used to add
+      # new singleton methods or to extend a module through an include. There's no need to support instance methods, the
+      # inclusion of another module or the prepending of another module, because those features are already a part of
+      # Ruby and can be used directly without any metaprogramming
+      run_included_hooks(attached_class_name, nesting) if singleton_levels > 0
 
       linearize_mixins(ancestors, namespaces, nesting)
       linearize_superclass(
@@ -568,7 +616,46 @@ module RubyIndexer
       singleton
     end
 
+    sig do
+      type_parameters(:T).params(
+        path: String,
+        type: T::Class[T.all(T.type_parameter(:T), Entry)],
+      ).returns(T.nilable(T::Array[T.type_parameter(:T)]))
+    end
+    def entries_for(path, type)
+      entries = @files_to_entries[path]
+      entries&.grep(type)
+    end
+
     private
+
+    # Runs the registered included hooks
+    sig { params(fully_qualified_name: String, nesting: T::Array[String]).void }
+    def run_included_hooks(fully_qualified_name, nesting)
+      return if @included_hooks.empty?
+
+      namespaces = self[fully_qualified_name]&.grep(Entry::Namespace)
+      return unless namespaces
+
+      namespaces.each do |namespace|
+        namespace.mixin_operations.each do |operation|
+          next unless operation.is_a?(Entry::Include)
+
+          # First we resolve the include name, so that we know the actual module being referred to in the include
+          resolved_modules = resolve(operation.module_name, nesting)
+          next unless resolved_modules
+
+          module_name = T.must(resolved_modules.first).name
+
+          # Then we grab any hooks registered for that module
+          hooks = @included_hooks[module_name]
+          next unless hooks
+
+          # We invoke the hooks with the index and the namespace that included the module
+          hooks.each { |hook| hook.call(self, namespace) }
+        end
+      end
+    end
 
     # Linearize mixins for an array of namespace entries. This method will mutate the `ancestors` array with the
     # linearized ancestors of the mixins
@@ -845,16 +932,21 @@ module RubyIndexer
       params(
         entry: Entry::UnresolvedMethodAlias,
         receiver_name: String,
+        seen_names: T::Array[String],
       ).returns(T.any(Entry::MethodAlias, Entry::UnresolvedMethodAlias))
     end
-    def resolve_method_alias(entry, receiver_name)
-      return entry if entry.new_name == entry.old_name
+    def resolve_method_alias(entry, receiver_name, seen_names)
+      new_name = entry.new_name
+      return entry if new_name == entry.old_name
+      return entry if seen_names.include?(new_name)
 
-      target_method_entries = resolve_method(entry.old_name, receiver_name)
+      seen_names << new_name
+
+      target_method_entries = resolve_method(entry.old_name, receiver_name, seen_names)
       return entry unless target_method_entries
 
       resolved_alias = Entry::MethodAlias.new(T.must(target_method_entries.first), entry)
-      original_entries = T.must(@entries[entry.new_name])
+      original_entries = T.must(@entries[new_name])
       original_entries.delete(entry)
       original_entries << resolved_alias
       resolved_alias
