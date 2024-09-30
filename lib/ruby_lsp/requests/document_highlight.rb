@@ -5,8 +5,6 @@ require "ruby_lsp/listeners/document_highlight"
 
 module RubyLsp
   module Requests
-    # ![Document highlight demo](../../document_highlight.gif)
-    #
     # The [document highlight](https://microsoft.github.io/language-server-protocol/specification#textDocument_documentHighlight)
     # informs the editor all relevant elements of the currently pointed item for highlighting. For example, when
     # the cursor is on the `F` of the constant `FOO`, the editor should identify other occurrences of `FOO`
@@ -14,29 +12,24 @@ module RubyLsp
     #
     # For writable elements like constants or variables, their read/write occurrences should be highlighted differently.
     # This is achieved by sending different "kind" attributes to the editor (2 for read and 3 for write).
-    #
-    # # Example
-    #
-    # ```ruby
-    # FOO = 1 # should be highlighted as "write"
-    #
-    # def foo
-    #   FOO # should be highlighted as "read"
-    # end
-    # ```
     class DocumentHighlight < Request
       extend T::Sig
 
       sig do
         params(
+          global_state: GlobalState,
           document: T.any(RubyDocument, ERBDocument),
           position: T::Hash[Symbol, T.untyped],
           dispatcher: Prism::Dispatcher,
         ).void
       end
-      def initialize(document, position, dispatcher)
+      def initialize(global_state, document, position, dispatcher)
         super()
-        node_context = document.locate_node(position)
+        char_position = document.create_scanner.find_char_position(position)
+        delegate_request_if_needed!(global_state, document, char_position)
+
+        node_context = RubyDocument.locate(document.parse_result.value, char_position)
+
         @response_builder = T.let(
           ResponseBuilders::CollectionResponseBuilder[Interface::DocumentHighlight].new,
           ResponseBuilders::CollectionResponseBuilder[Interface::DocumentHighlight],

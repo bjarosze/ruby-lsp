@@ -9,12 +9,6 @@ module RubyLsp
     sig { returns(GlobalState) }
     attr_reader :global_state
 
-    sig { params(test_mode: T::Boolean).void }
-    def initialize(test_mode: false)
-      super
-      @global_state = T.let(GlobalState.new, GlobalState)
-    end
-
     sig { override.params(message: T::Hash[Symbol, T.untyped]).void }
     def process_message(message)
       case message[:method]
@@ -100,6 +94,8 @@ module RubyLsp
       when "$/cancelRequest"
         @mutex.synchronize { @cancelled_requests << message[:params][:id] }
       end
+    rescue DelegateRequestError
+      send_message(Error.new(id: message[:id], code: DelegateRequestError::CODE, message: "DELEGATE_REQUEST"))
     rescue StandardError, LoadError => e
       # If an error occurred in a request, we have to return an error response or else the editor will hang
       if message[:id]
@@ -148,7 +144,7 @@ module RubyLsp
             method: "window/showMessage",
             params: Interface::ShowMessageParams.new(
               type: Constant::MessageType::WARNING,
-              message: "Error loading addons:\n\n#{errored_addons.map(&:formatted_errors).join("\n\n")}",
+              message: "Error loading add-ons:\n\n#{errored_addons.map(&:formatted_errors).join("\n\n")}",
             ),
           ),
         )
@@ -418,6 +414,7 @@ module RubyLsp
       document_symbol = Requests::DocumentSymbol.new(uri, dispatcher)
       document_link = Requests::DocumentLink.new(uri, parse_result.comments, dispatcher)
       code_lens = Requests::CodeLens.new(@global_state, uri, dispatcher)
+      inlay_hint = Requests::InlayHints.new(document, T.must(@store.features_configuration.dig(:inlayHint)), dispatcher)
       dispatcher.dispatch(parse_result.value)
 
       # Store all responses retrieve in this round of visits in the cache and then return the response for the request
@@ -426,6 +423,7 @@ module RubyLsp
       document.cache_set("textDocument/documentSymbol", document_symbol.perform)
       document.cache_set("textDocument/documentLink", document_link.perform)
       document.cache_set("textDocument/codeLens", code_lens.perform)
+      document.cache_set("textDocument/inlayHint", inlay_hint.perform)
 
       send_message(Result.new(id: message[:id], response: document.cache_get(message[:method])))
     end
@@ -554,7 +552,7 @@ module RubyLsp
         return
       end
 
-      request = Requests::DocumentHighlight.new(document, params[:position], dispatcher)
+      request = Requests::DocumentHighlight.new(@global_state, document, params[:position], dispatcher)
       dispatcher.dispatch(document.parse_result.value)
       send_message(Result.new(id: message[:id], response: request.perform))
     end
@@ -618,18 +616,35 @@ module RubyLsp
     sig { params(message: T::Hash[Symbol, T.untyped]).void }
     def text_document_inlay_hint(message)
       params = message[:params]
+      document = @store.get(params.dig(:textDocument, :uri))
+      range = params.dig(:range, :start, :line)..params.dig(:range, :end, :line)
+
+      cached_response = document.cache_get("textDocument/inlayHint")
+      if cached_response != Document::EMPTY_CACHE
+
+        send_message(
+          Result.new(
+            id: message[:id],
+            response: cached_response.select { |hint| range.cover?(hint.position[:line]) },
+          ),
+        )
+        return
+      end
+
       hints_configurations = T.must(@store.features_configuration.dig(:inlayHint))
       dispatcher = Prism::Dispatcher.new
-      document = @store.get(params.dig(:textDocument, :uri))
 
       unless document.is_a?(RubyDocument) || document.is_a?(ERBDocument)
         send_empty_response(message[:id])
         return
       end
 
-      request = Requests::InlayHints.new(document, params[:range], hints_configurations, dispatcher)
+      request = Requests::InlayHints.new(document, hints_configurations, dispatcher)
       dispatcher.visit(document.parse_result.value)
-      send_message(Result.new(id: message[:id], response: request.perform))
+      result = request.perform
+      document.cache_set("textDocument/inlayHint", result)
+
+      send_message(Result.new(id: message[:id], response: result.select { |hint| range.cover?(hint.position[:line]) }))
     end
 
     sig { params(message: T::Hash[Symbol, T.untyped]).void }
@@ -751,6 +766,17 @@ module RubyLsp
 
     sig { params(message: T::Hash[Symbol, T.untyped]).void }
     def text_document_completion_item_resolve(message)
+      # When responding to a delegated completion request, it means we're handling a completion item that isn't related
+      # to Ruby (probably related to an ERB host language like HTML). We need to return the original completion item
+      # back to the editor so that it's displayed correctly
+      if message.dig(:params, :data, :delegateCompletion)
+        send_message(Result.new(
+          id: message[:id],
+          response: message[:params],
+        ))
+        return
+      end
+
       send_message(Result.new(
         id: message[:id],
         response: Requests::CompletionResolve.new(@global_state, message[:params]).perform,

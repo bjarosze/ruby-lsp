@@ -24,9 +24,6 @@ module RubyIndexer
 
     alias_method :name_location, :location
 
-    sig { returns(T::Array[String]) }
-    attr_reader :comments
-
     sig { returns(Visibility) }
     attr_accessor :visibility
 
@@ -35,7 +32,7 @@ module RubyIndexer
         name: String,
         file_path: String,
         location: T.any(Prism::Location, RubyIndexer::Location),
-        comments: T::Array[String],
+        comments: T.nilable(String),
       ).void
     end
     def initialize(name, file_path, location, comments)
@@ -79,6 +76,42 @@ module RubyIndexer
       File.basename(@file_path)
     end
 
+    sig { returns(String) }
+    def comments
+      @comments ||= begin
+        # Parse only the comments based on the file path, which is much faster than parsing the entire file
+        parsed_comments = Prism.parse_file_comments(@file_path)
+
+        # Group comments based on whether they belong to a single block of comments
+        grouped = parsed_comments.slice_when do |left, right|
+          left.location.start_line + 1 != right.location.start_line
+        end
+
+        # Find the group that is either immediately or two lines above the current entry
+        correct_group = grouped.find do |group|
+          comment_end_line = group.last.location.start_line
+          (comment_end_line - 1..comment_end_line).cover?(@location.start_line - 1)
+        end
+
+        # If we found something, we join the comments together. Otherwise, the entry has no documentation and we don't
+        # want to accidentally re-parse it, so we set it to an empty string. If an entry is updated, the entire entry
+        # object is dropped, so this will not prevent updates
+        if correct_group
+          correct_group.filter_map do |comment|
+            content = comment.slice.chomp
+
+            if content.valid_encoding?
+              content.delete_prefix!("#")
+              content.delete_prefix!(" ")
+              content
+            end
+          end.join("\n")
+        else
+          ""
+        end
+      end
+    end
+
     class ModuleOperation
       extend T::Sig
       extend T::Helpers
@@ -116,7 +149,7 @@ module RubyIndexer
           file_path: String,
           location: T.any(Prism::Location, RubyIndexer::Location),
           name_location: T.any(Prism::Location, Location),
-          comments: T::Array[String],
+          comments: T.nilable(String),
         ).void
       end
       def initialize(nesting, file_path, location, name_location, comments)
@@ -177,7 +210,7 @@ module RubyIndexer
           file_path: String,
           location: T.any(Prism::Location, RubyIndexer::Location),
           name_location: T.any(Prism::Location, Location),
-          comments: T::Array[String],
+          comments: T.nilable(String),
           parent_class: T.nilable(String),
         ).void
       end
@@ -195,7 +228,7 @@ module RubyIndexer
     class SingletonClass < Class
       extend T::Sig
 
-      sig { params(location: Prism::Location, name_location: Prism::Location, comments: T::Array[String]).void }
+      sig { params(location: Prism::Location, name_location: Prism::Location, comments: T.nilable(String)).void }
       def update_singleton_information(location, name_location, comments)
         # Create a new RubyIndexer::Location object from the Prism location
         @location = Location.new(
@@ -210,7 +243,7 @@ module RubyIndexer
           name_location.start_column,
           name_location.end_column,
         )
-        @comments.concat(comments)
+        (@comments ||= +"") << comments if comments
       end
     end
 
@@ -302,6 +335,17 @@ module RubyIndexer
       end
     end
 
+    # A forwarding method parameter, e.g. `def foo(...)`
+    class ForwardingParameter < Parameter
+      extend T::Sig
+
+      sig { void }
+      def initialize
+        # You can't name a forwarding parameter, it's always called `...`
+        super(name: :"...")
+      end
+    end
+
     class Member < Entry
       extend T::Sig
       extend T::Helpers
@@ -311,17 +355,12 @@ module RubyIndexer
       sig { returns(T.nilable(Entry::Namespace)) }
       attr_reader :owner
 
-      sig { returns(T::Array[RubyIndexer::Entry::Parameter]) }
-      def parameters
-        T.must(signatures.first).parameters
-      end
-
       sig do
         params(
           name: String,
           file_path: String,
           location: T.any(Prism::Location, RubyIndexer::Location),
-          comments: T::Array[String],
+          comments: T.nilable(String),
           visibility: Visibility,
           owner: T.nilable(Entry::Namespace),
         ).void
@@ -389,7 +428,7 @@ module RubyIndexer
           file_path: String,
           location: T.any(Prism::Location, RubyIndexer::Location),
           name_location: T.any(Prism::Location, Location),
-          comments: T::Array[String],
+          comments: T.nilable(String),
           signatures: T::Array[Signature],
           visibility: Visibility,
           owner: T.nilable(Entry::Namespace),
@@ -440,7 +479,7 @@ module RubyIndexer
           name: String,
           file_path: String,
           location: T.any(Prism::Location, RubyIndexer::Location),
-          comments: T::Array[String],
+          comments: T.nilable(String),
         ).void
       end
       def initialize(target, nesting, name, file_path, location, comments) # rubocop:disable Metrics/ParameterLists
@@ -477,7 +516,7 @@ module RubyIndexer
           name: String,
           file_path: String,
           location: T.any(Prism::Location, RubyIndexer::Location),
-          comments: T::Array[String],
+          comments: T.nilable(String),
           owner: T.nilable(Entry::Namespace),
         ).void
       end
@@ -506,7 +545,7 @@ module RubyIndexer
           owner: T.nilable(Entry::Namespace),
           file_path: String,
           location: T.any(Prism::Location, RubyIndexer::Location),
-          comments: T::Array[String],
+          comments: T.nilable(String),
         ).void
       end
       def initialize(new_name, old_name, owner, file_path, location, comments) # rubocop:disable Metrics/ParameterLists
@@ -530,10 +569,9 @@ module RubyIndexer
 
       sig { params(target: T.any(Member, MethodAlias), unresolved_alias: UnresolvedMethodAlias).void }
       def initialize(target, unresolved_alias)
-        full_comments = ["Alias for #{target.name}\n"]
-        full_comments.concat(unresolved_alias.comments)
-        full_comments << "\n"
-        full_comments.concat(target.comments)
+        full_comments = +"Alias for #{target.name}\n"
+        full_comments << "#{unresolved_alias.comments}\n"
+        full_comments << target.comments
 
         super(
           unresolved_alias.new_name,
@@ -544,11 +582,6 @@ module RubyIndexer
 
         @target = target
         @owner = T.let(unresolved_alias.owner, T.nilable(Entry::Namespace))
-      end
-
-      sig { returns(T::Array[Parameter]) }
-      def parameters
-        @target.parameters
       end
 
       sig { returns(String) }
@@ -585,6 +618,108 @@ module RubyIndexer
       sig { returns(String) }
       def format
         @parameters.map(&:decorated_name).join(", ")
+      end
+
+      # Returns `true` if the given call node arguments array matches this method signature. This method will prefer
+      # returning `true` for situations that cannot be analyzed statically, like the presence of splats, keyword splats
+      # or forwarding arguments.
+      #
+      # Since this method is used to detect which overload should be displayed in signature help, it will also return
+      # `true` if there are missing arguments since the user may not be done typing yet. For example:
+      #
+      # ```ruby
+      # def foo(a, b); end
+      # # All of the following are considered matches because the user might be in the middle of typing and we have to
+      # # show them the signature
+      # foo
+      # foo(1)
+      # foo(1, 2)
+      # ```
+      sig { params(arguments: T::Array[Prism::Node]).returns(T::Boolean) }
+      def matches?(arguments)
+        min_pos = 0
+        max_pos = T.let(0, T.any(Integer, Float))
+        names = []
+        has_forward = T.let(false, T::Boolean)
+        has_keyword_rest = T.let(false, T::Boolean)
+
+        @parameters.each do |param|
+          case param
+          when RequiredParameter
+            min_pos += 1
+            max_pos += 1
+          when OptionalParameter
+            max_pos += 1
+          when RestParameter
+            max_pos = Float::INFINITY
+          when ForwardingParameter
+            max_pos = Float::INFINITY
+            has_forward = true
+          when KeywordParameter, OptionalKeywordParameter
+            names << param.name
+          when KeywordRestParameter
+            has_keyword_rest = true
+          end
+        end
+
+        keyword_hash_nodes, positional_args = arguments.partition { |arg| arg.is_a?(Prism::KeywordHashNode) }
+        keyword_args = T.cast(keyword_hash_nodes.first, T.nilable(Prism::KeywordHashNode))&.elements
+        forwarding_arguments, positionals = positional_args.partition do |arg|
+          arg.is_a?(Prism::ForwardingArgumentsNode)
+        end
+
+        return true if has_forward && min_pos == 0
+
+        # If the only argument passed is a forwarding argument, then anything will match
+        (positionals.empty? && forwarding_arguments.any?) ||
+          (
+            # Check if positional arguments match. This includes required, optional, rest arguments. We also need to
+            # verify if there's a trailing forwading argument, like `def foo(a, ...); end`
+            positional_arguments_match?(positionals, forwarding_arguments, keyword_args, min_pos, max_pos) &&
+            # If the positional arguments match, we move on to checking keyword, optional keyword and keyword rest
+            # arguments. If there's a forward argument, then it will always match. If the method accepts a keyword rest
+            # (**kwargs), then we can't analyze statically because the user could be passing a hash and we don't know
+            # what the runtime values inside the hash are.
+            #
+            # If none of those match, then we verify if the user is passing the expect names for the keyword arguments
+            (has_forward || has_keyword_rest || keyword_arguments_match?(keyword_args, names))
+          )
+      end
+
+      sig do
+        params(
+          positional_args: T::Array[Prism::Node],
+          forwarding_arguments: T::Array[Prism::Node],
+          keyword_args: T.nilable(T::Array[Prism::Node]),
+          min_pos: Integer,
+          max_pos: T.any(Integer, Float),
+        ).returns(T::Boolean)
+      end
+      def positional_arguments_match?(positional_args, forwarding_arguments, keyword_args, min_pos, max_pos)
+        # If the method accepts at least one positional argument and a splat has been passed
+        (min_pos > 0 && positional_args.any? { |arg| arg.is_a?(Prism::SplatNode) }) ||
+          # If there's at least one positional argument unaccounted for and a keyword splat has been passed
+          (min_pos - positional_args.length > 0 && keyword_args&.any? { |arg| arg.is_a?(Prism::AssocSplatNode) }) ||
+          # If there's at least one positional argument unaccounted for and a forwarding argument has been passed
+          (min_pos - positional_args.length > 0 && forwarding_arguments.any?) ||
+          # If the number of positional arguments is within the expected range
+          (min_pos > 0 && positional_args.length <= max_pos) ||
+          (min_pos == 0 && positional_args.empty?)
+      end
+
+      sig { params(args: T.nilable(T::Array[Prism::Node]), names: T::Array[Symbol]).returns(T::Boolean) }
+      def keyword_arguments_match?(args, names)
+        return true unless args
+        return true if args.any? { |arg| arg.is_a?(Prism::AssocSplatNode) }
+
+        arg_names = args.filter_map do |arg|
+          next unless arg.is_a?(Prism::AssocNode)
+
+          key = arg.key
+          key.value&.to_sym if key.is_a?(Prism::SymbolNode)
+        end
+
+        (arg_names - names).empty?
       end
     end
   end

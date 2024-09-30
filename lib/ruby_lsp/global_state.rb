@@ -21,7 +21,7 @@ module RubyLsp
     attr_reader :encoding
 
     sig { returns(T::Boolean) }
-    attr_reader :supports_watching_files, :experimental_features
+    attr_reader :supports_watching_files, :experimental_features, :supports_request_delegation
 
     sig { returns(TypeInferrer) }
     attr_reader :type_inferrer
@@ -39,8 +39,9 @@ module RubyLsp
       @supported_formatters = T.let({}, T::Hash[String, Requests::Support::Formatter])
       @supports_watching_files = T.let(false, T::Boolean)
       @experimental_features = T.let(false, T::Boolean)
-      @type_inferrer = T.let(TypeInferrer.new(@index, @experimental_features), TypeInferrer)
+      @type_inferrer = T.let(TypeInferrer.new(@index), TypeInferrer)
       @addon_settings = T.let({}, T::Hash[String, T.untyped])
+      @supports_request_delegation = T.let(false, T::Boolean)
     end
 
     sig { params(addon_name: String).returns(T.nilable(T::Hash[Symbol, T.untyped])) }
@@ -123,7 +124,6 @@ module RubyLsp
       end
 
       @experimental_features = options.dig(:initializationOptions, :experimentalFeaturesEnabled) || false
-      @type_inferrer.experimental_features = @experimental_features
 
       addon_settings = options.dig(:initializationOptions, :addonSettings)
       if addon_settings
@@ -131,6 +131,7 @@ module RubyLsp
         @addon_settings.merge!(addon_settings)
       end
 
+      @supports_request_delegation = options.dig(:capabilities, :experimental, :requestDelegation) || false
       notifications
     end
 

@@ -27,7 +27,6 @@ module RubyLsp
     def initialize(project_path, **options)
       @project_path = project_path
       @branch = T.let(options[:branch], T.nilable(String))
-      @experimental = T.let(options[:experimental], T.nilable(T::Boolean))
 
       # Regular bundle paths
       @gemfile = T.let(
@@ -56,7 +55,7 @@ module RubyLsp
 
     # Sets up the custom bundle and returns the `BUNDLE_GEMFILE`, `BUNDLE_PATH` and `BUNDLE_APP_CONFIG` that should be
     # used for running the server
-    sig { returns([String, T.nilable(String), T.nilable(String)]) }
+    sig { returns(T::Hash[String, String]) }
     def setup!
       raise BundleNotLocked if @gemfile&.exist? && !@lockfile&.exist?
 
@@ -176,22 +175,18 @@ module RubyLsp
       dependencies
     end
 
-    sig { params(bundle_gemfile: T.nilable(Pathname)).returns([String, T.nilable(String), T.nilable(String)]) }
+    sig { params(bundle_gemfile: T.nilable(Pathname)).returns(T::Hash[String, String]) }
     def run_bundle_install(bundle_gemfile = @gemfile)
+      env = bundler_settings_as_env
+      env["BUNDLE_GEMFILE"] = bundle_gemfile.to_s
+
       # If the user has a custom bundle path configured, we need to ensure that we will use the absolute and not
       # relative version of it when running `bundle install`. This is necessary to avoid installing the gems under the
       # `.ruby-lsp` folder, which is not the user's intention. For example, if the path is configured as `vendor`, we
       # want to install it in the top level `vendor` and not `.ruby-lsp/vendor`
-      path = Bundler.settings["path"]
-      expanded_path = File.expand_path(path, @project_path) if path
-
-      # Use the absolute `BUNDLE_PATH` to prevent accidentally creating unwanted folders under `.ruby-lsp`
-      env = {}
-      env["BUNDLE_GEMFILE"] = bundle_gemfile.to_s
-      env["BUNDLE_PATH"] = expanded_path if expanded_path
-
-      local_config_path = File.join(@project_path, ".bundle")
-      env["BUNDLE_APP_CONFIG"] = local_config_path if Dir.exist?(local_config_path)
+      if env["BUNDLE_PATH"]
+        env["BUNDLE_PATH"] = File.expand_path(env["BUNDLE_PATH"], @project_path)
+      end
 
       # If `ruby-lsp` and `debug` (and potentially `ruby-lsp-rails`) are already in the Gemfile, then we shouldn't try
       # to upgrade them or else we'll produce undesired source control changes. If the custom bundle was just created
@@ -211,7 +206,6 @@ module RubyLsp
         command << "ruby-lsp " unless @dependencies["ruby-lsp"]
         command << "debug " unless @dependencies["debug"]
         command << "ruby-lsp-rails " if @rails_app && !@dependencies["ruby-lsp-rails"]
-        command << "--pre" if @experimental
         command.delete_suffix!(" ")
         command << ")"
 
@@ -238,7 +232,31 @@ module RubyLsp
         return setup!
       end
 
-      [bundle_gemfile.to_s, expanded_path, env["BUNDLE_APP_CONFIG"]]
+      env
+    end
+
+    # Gather all Bundler settings (global and local) and return them as a hash that can be used as the environment
+    sig { returns(T::Hash[String, String]) }
+    def bundler_settings_as_env
+      local_config_path = File.join(@project_path, ".bundle")
+
+      # If there's no Gemfile or if the local config path does not exist, we return an empty setting set (which has the
+      # global settings included). Otherwise, we also load the local settings
+      settings = begin
+        Dir.exist?(local_config_path) ? Bundler::Settings.new(local_config_path) : Bundler::Settings.new
+      rescue Bundler::GemfileNotFound
+        Bundler::Settings.new
+      end
+
+      # Map all settings to their environment variable names with `key_for` and their values. For example, the if the
+      # setting name `e` is `path` with a value of `vendor/bundle`, then it will return `"BUNDLE_PATH" =>
+      # "vendor/bundle"`
+      settings.all.to_h do |e|
+        key = Bundler::Settings.key_for(e)
+        value = Array(settings[e]).join(":").tr(" ", ":")
+
+        [key, value]
+      end
     end
 
     sig { returns(T::Boolean) }

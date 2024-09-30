@@ -213,10 +213,10 @@ module RubyIndexer
       RUBY
 
       foo_entry = @index["Foo"].first
-      assert_equal("This is a Foo comment\nThis is another Foo comment", foo_entry.comments.join("\n"))
+      assert_equal("This is a Foo comment\nThis is another Foo comment", foo_entry.comments)
 
       bar_entry = @index["Bar"].first
-      assert_equal("This Bar comment has 1 line padding", bar_entry.comments.join("\n"))
+      assert_equal("This Bar comment has 1 line padding", bar_entry.comments)
     end
 
     def test_skips_comments_containing_invalid_encodings
@@ -239,10 +239,10 @@ module RubyIndexer
       RUBY
 
       foo_entry = @index["Foo"].first
-      assert_equal("This is a Foo comment\nThis is another Foo comment", foo_entry.comments.join("\n"))
+      assert_equal("This is a Foo comment\nThis is another Foo comment", foo_entry.comments)
 
       bar_entry = @index["Foo::Bar"].first
-      assert_equal("This is a Bar comment", bar_entry.comments.join("\n"))
+      assert_equal("This is a Bar comment", bar_entry.comments)
     end
 
     def test_comments_can_be_attached_to_a_reopened_class
@@ -255,10 +255,10 @@ module RubyIndexer
       RUBY
 
       first_foo_entry = @index["Foo"][0]
-      assert_equal("This is a Foo comment", first_foo_entry.comments.join("\n"))
+      assert_equal("This is a Foo comment", first_foo_entry.comments)
 
       second_foo_entry = @index["Foo"][1]
-      assert_equal("This is another Foo comment", second_foo_entry.comments.join("\n"))
+      assert_equal("This is another Foo comment", second_foo_entry.comments)
     end
 
     def test_comments_removes_the_leading_pound_and_space
@@ -271,10 +271,10 @@ module RubyIndexer
       RUBY
 
       first_foo_entry = @index["Foo"][0]
-      assert_equal("This is a Foo comment", first_foo_entry.comments.join("\n"))
+      assert_equal("This is a Foo comment", first_foo_entry.comments)
 
       second_foo_entry = @index["Bar"][0]
-      assert_equal("This is a Bar comment", second_foo_entry.comments.join("\n"))
+      assert_equal("This is a Bar comment", second_foo_entry.comments)
     end
 
     def test_private_class_and_module_indexing
@@ -483,7 +483,7 @@ module RubyIndexer
 
       foo = T.must(@index["Foo::<Class:Foo>"].first)
       assert_equal(4, foo.location.start_line)
-      assert_equal("Some extra comments", foo.comments.join("\n"))
+      assert_equal("Some extra comments", foo.comments)
     end
 
     def test_dynamic_singleton_class_blocks
@@ -501,7 +501,7 @@ module RubyIndexer
       # That pattern cannot be properly analyzed statically and assuming that it's always a regular singleton simplifies
       # the implementation considerably.
       assert_equal(3, singleton.location.start_line)
-      assert_equal("Some extra comments", singleton.comments.join("\n"))
+      assert_equal("Some extra comments", singleton.comments)
     end
 
     def test_namespaces_inside_singleton_blocks
@@ -604,6 +604,20 @@ module RubyIndexer
       assert_entry("Foo", Entry::Module, "/fake/path/foo.rb:1-2:7-5")
       assert_entry("Foo::Bar", Entry::Class, "/fake/path/foo.rb:2-4:3-7")
       assert_entry("Qux", Entry::Class, "/fake/path/foo.rb:5-4:6-7")
+    end
+
+    def test_lazy_comment_fetching_uses_correct_line_breaks_for_rendering
+      path = "lib/ruby_lsp/node_context.rb"
+      indexable = IndexablePath.new("#{Dir.pwd}/lib", path)
+
+      @index.index_single(indexable, collect_comments: false)
+
+      entry = @index["RubyLsp::NodeContext"].first
+
+      assert_equal(<<~COMMENTS.chomp, entry.comments)
+        This class allows listeners to access contextual information about a node in the AST, such as its parent,
+        its namespace nesting, and the surrounding CallNode (e.g. a method call).
+      COMMENTS
     end
   end
 end

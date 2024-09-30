@@ -5,16 +5,8 @@ require "ruby_lsp/listeners/hover"
 
 module RubyLsp
   module Requests
-    # ![Hover demo](../../hover.gif)
-    #
     # The [hover request](https://microsoft.github.io/language-server-protocol/specification#textDocument_hover)
     # displays the documentation for the symbol currently under the cursor.
-    #
-    # # Example
-    #
-    # ```ruby
-    # String # -> Hovering over the class reference will show all declaration locations and the documentation
-    # ```
     class Hover < Request
       extend T::Sig
       extend T::Generic
@@ -41,7 +33,15 @@ module RubyLsp
       end
       def initialize(document, global_state, position, dispatcher, sorbet_level)
         super()
-        node_context = document.locate_node(position, node_types: Listeners::Hover::ALLOWED_TARGETS)
+
+        char_position = document.create_scanner.find_char_position(position)
+        delegate_request_if_needed!(global_state, document, char_position)
+
+        node_context = RubyDocument.locate(
+          document.parse_result.value,
+          char_position,
+          node_types: Listeners::Hover::ALLOWED_TARGETS,
+        )
         target = node_context.node
         parent = node_context.parent
 

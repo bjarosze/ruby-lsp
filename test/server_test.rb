@@ -451,7 +451,7 @@ class ServerTest < Minitest::Test
 
     addon_error_notification = @server.pop_response
     assert_equal("window/showMessage", addon_error_notification.method)
-    assert_equal("Error loading addons:\n\nBar:\n  boom\n", addon_error_notification.params.message)
+    assert_equal("Error loading add-ons:\n\nBar:\n  boom\n", addon_error_notification.params.message)
     addons_info = @server.pop_response.response
 
     assert_equal("Foo", addons_info[0][:name])
@@ -605,6 +605,59 @@ class ServerTest < Minitest::Test
 
       result = find_message(RubyLsp::Result, id: 3)
       assert_nil(result.response)
+    end
+  end
+
+  def test_inlay_hints_are_cached
+    uri = URI::Generic.from_path(path: "/fake.rb")
+    text = <<~RUBY
+      def foo
+      rescue
+      end
+    RUBY
+
+    capture_io do
+      @server.process_message(id: 1, method: "initialize", params: {
+        initializationOptions: {
+          featuresConfiguration: {
+            inlayHint: {
+              enableAll: true,
+            },
+          },
+        },
+      })
+
+      @server.process_message({
+        method: "textDocument/didOpen",
+        params: {
+          textDocument: {
+            uri: uri,
+            text: text,
+            version: 1,
+            languageId: "ruby",
+          },
+        },
+      })
+
+      @server.process_message({
+        id: 2,
+        method: "textDocument/documentSymbol",
+        params: { textDocument: { uri: uri } },
+      })
+
+      result = find_message(RubyLsp::Result, id: 2)
+      refute_nil(result.response)
+
+      RubyLsp::Requests::InlayHints.any_instance.expects(:perform).never
+
+      @server.process_message({
+        id: 3,
+        method: "textDocument/inlayHint",
+        params: { textDocument: { uri: uri } },
+      })
+
+      result = find_message(RubyLsp::Result, id: 3)
+      assert_equal(1, result.response.length)
     end
   end
 

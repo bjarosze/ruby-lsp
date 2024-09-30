@@ -5,27 +5,8 @@ require "ruby_lsp/listeners/completion"
 
 module RubyLsp
   module Requests
-    # ![Completion demo](../../completion.gif)
-    #
     # The [completion](https://microsoft.github.io/language-server-protocol/specification#textDocument_completion)
     # suggests possible completions according to what the developer is typing.
-    #
-    # Currently supported targets:
-    #
-    # - Classes
-    # - Modules
-    # - Constants
-    # - Require paths
-    # - Methods invoked on self only
-    # - Instance variables
-    #
-    # # Example
-    #
-    # ```ruby
-    # require "ruby_lsp/requests" # --> completion: suggests `base_request`, `code_actions`, ...
-    #
-    # RubyLsp::Requests:: # --> completion: suggests `Completion`, `Hover`, ...
-    # ```
     class Completion < Request
       extend T::Sig
 
@@ -36,7 +17,7 @@ module RubyLsp
         def provider
           Interface::CompletionOptions.new(
             resolve_provider: true,
-            trigger_characters: ["/", "\"", "'", ":", "@", "."],
+            trigger_characters: ["/", "\"", "'", ":", "@", ".", "=", "<"],
             completion_item: {
               labelDetailsSupport: true,
             },
@@ -60,6 +41,8 @@ module RubyLsp
         # Completion always receives the position immediately after the character that was just typed. Here we adjust it
         # back by 1, so that we find the right node
         char_position = document.create_scanner.find_char_position(params[:position]) - 1
+        delegate_request_if_needed!(global_state, document, char_position)
+
         node_context = RubyDocument.locate(
           document.parse_result.value,
           char_position,

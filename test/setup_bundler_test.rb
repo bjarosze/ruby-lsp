@@ -6,14 +6,14 @@ require "ruby_lsp/setup_bundler"
 
 class SetupBundlerTest < Minitest::Test
   def test_does_nothing_if_both_ruby_lsp_and_debug_are_in_the_bundle
-    Object.any_instance.expects(:system).with(bundle_env, "(bundle check || bundle install) 1>&2").returns(true)
+    stub_bundle_with_env(bundle_env)
     Bundler::LockfileParser.any_instance.expects(:dependencies).returns({ "ruby-lsp" => true, "debug" => true })
     run_script
     refute_path_exists(".ruby-lsp")
   end
 
   def test_does_nothing_if_both_ruby_lsp_and_debug_are_in_the_bundle2
-    Object.any_instance.expects(:system).with(bundle_env, "(bundle check || bundle install) 1>&2").returns(true)
+    stub_bundle_with_env(bundle_env)
     Bundler::LockfileParser.any_instance.expects(:dependencies).returns({
       "ruby-lsp" => true,
       "rails" => true,
@@ -25,7 +25,7 @@ class SetupBundlerTest < Minitest::Test
   end
 
   def test_removes_ruby_lsp_folder_if_both_gems_were_added_to_the_bundle
-    Object.any_instance.expects(:system).with(bundle_env, "(bundle check || bundle install) 1>&2")
+    stub_bundle_with_env(bundle_env)
     Bundler::LockfileParser.any_instance.expects(:dependencies).returns({ "ruby-lsp" => true, "debug" => true })
     FileUtils.mkdir(".ruby-lsp")
     run_script
@@ -35,7 +35,7 @@ class SetupBundlerTest < Minitest::Test
   end
 
   def test_in_a_rails_app_removes_ruby_lsp_folder_if_all_gems_were_added_to_the_bundle
-    Object.any_instance.expects(:system).with(bundle_env, "(bundle check || bundle install) 1>&2").returns(true)
+    stub_bundle_with_env(bundle_env)
     Bundler::LockfileParser.any_instance.expects(:dependencies)
       .returns({ "ruby-lsp" => true, "ruby-lsp-rails" => true, "debug" => true })
     FileUtils.mkdir(".ruby-lsp")
@@ -46,10 +46,7 @@ class SetupBundlerTest < Minitest::Test
   end
 
   def test_creates_custom_bundle
-    Object.any_instance.expects(:system).with(
-      bundle_env(Dir.pwd, ".ruby-lsp/Gemfile"),
-      "(bundle check || bundle install) 1>&2",
-    ).returns(true)
+    stub_bundle_with_env(bundle_env(Dir.pwd, ".ruby-lsp/Gemfile"))
     Bundler::LockfileParser.any_instance.expects(:dependencies).returns({}).at_least_once
     run_script
 
@@ -65,11 +62,7 @@ class SetupBundlerTest < Minitest::Test
   end
 
   def test_creates_custom_bundle_for_a_rails_app
-    Object.any_instance.expects(:system).with(
-      bundle_env(Dir.pwd, ".ruby-lsp/Gemfile"),
-      "(bundle check || bundle install) 1>&2",
-    ).returns(true)
-
+    stub_bundle_with_env(bundle_env(Dir.pwd, ".ruby-lsp/Gemfile"))
     FileUtils.mkdir("config")
     FileUtils.cp("test/fixtures/rails_application.rb", "config/application.rb")
     Bundler::LockfileParser.any_instance.expects(:dependencies).returns({ "rails" => true }).at_least_once
@@ -125,11 +118,8 @@ class SetupBundlerTest < Minitest::Test
         # ruby-lsp is a part of the custom lockfile and would try to run `bundle update ruby-lsp`, which would fail. If
         # we evaluate lazily, then we only find dependencies after the lockfile was copied, and then run bundle install
         # instead, which re-locks and adds the ruby-lsp
-        Object.any_instance.expects(:system).with(
-          bundle_env(dir, ".ruby-lsp/Gemfile"),
-          "(bundle check || bundle install) 1>&2",
-        ).returns(true)
         Bundler.with_unbundled_env do
+          stub_bundle_with_env(bundle_env(dir, ".ruby-lsp/Gemfile"))
           run_script(dir)
         end
       end
@@ -157,14 +147,14 @@ class SetupBundlerTest < Minitest::Test
         FileUtils.touch("Gemfile.lock", mtime: Time.now + 10 * 60)
 
         capture_subprocess_io do
-          Object.any_instance.expects(:system).with(
-            bundle_env(dir, ".ruby-lsp/Gemfile"),
-            "((bundle check && bundle update ruby-lsp debug) || bundle install) 1>&2",
-          ).returns(true)
-
-          FileUtils.expects(:cp).never
-
           Bundler.with_unbundled_env do
+            stub_bundle_with_env(
+              bundle_env(dir, ".ruby-lsp/Gemfile"),
+              "((bundle check && bundle update ruby-lsp debug) || bundle install) 1>&2",
+            )
+
+            FileUtils.expects(:cp).never
+
             # Run the script again without having the lockfile modified
             run_script(dir)
           end
@@ -194,12 +184,8 @@ class SetupBundlerTest < Minitest::Test
         File.write(File.join(dir, ".ruby-lsp", "last_updated"), (Time.now - 30 * 60).iso8601)
 
         capture_subprocess_io do
-          Object.any_instance.expects(:system).with(
-            bundle_env(dir, ".ruby-lsp/Gemfile"),
-            "(bundle check || bundle install) 1>&2",
-          ).returns(true)
-
           Bundler.with_unbundled_env do
+            stub_bundle_with_env(bundle_env(dir, ".ruby-lsp/Gemfile"))
             # Run the script again without having the lockfile modified
             run_script(dir)
           end
@@ -209,16 +195,16 @@ class SetupBundlerTest < Minitest::Test
   end
 
   def test_uses_absolute_bundle_path_for_bundle_install
-    Bundler.settings.temporary(path: "vendor/bundle") do
-      Object.any_instance.expects(:system).with(
-        bundle_env(Dir.pwd, ".ruby-lsp/Gemfile"),
-        "(bundle check || bundle install) 1>&2",
-      ).returns(true)
-      Bundler::LockfileParser.any_instance.expects(:dependencies).returns({}).at_least_once
-      run_script(expected_path: File.expand_path("vendor/bundle", Dir.pwd))
-    end
+    original = Bundler.settings[:path]
+    Bundler.settings.set_global(:path, "vendor/bundle")
+
+    stub_bundle_with_env(bundle_env(Dir.pwd, ".ruby-lsp/Gemfile"))
+
+    Bundler::LockfileParser.any_instance.expects(:dependencies).returns({}).at_least_once
+    run_script(expected_path: File.expand_path("vendor/bundle", Dir.pwd))
   ensure
     FileUtils.rm_r(".ruby-lsp")
+    Bundler.settings.set_global(:path, original)
   end
 
   def test_creates_custom_bundle_if_no_gemfile
@@ -226,12 +212,9 @@ class SetupBundlerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       Dir.chdir(dir) do
         bundle_gemfile = Pathname.new(".ruby-lsp").expand_path(dir) + "Gemfile"
-        Object.any_instance.expects(:system).with(
-          bundle_env(dir, bundle_gemfile.to_s),
-          "(bundle check || bundle install) 1>&2",
-        ).returns(true)
 
         Bundler.with_unbundled_env do
+          stub_bundle_with_env(bundle_env(dir, bundle_gemfile.to_s))
           run_script(dir)
         end
 
@@ -291,10 +274,7 @@ class SetupBundlerTest < Minitest::Test
         FileUtils.touch(File.join(dir, "Gemfile.lock"))
 
         Bundler.with_unbundled_env do
-          Object.any_instance.expects(:system).with(
-            bundle_env(File.realpath(dir)),
-            "(bundle check || bundle install) 1>&2",
-          ).returns(true)
+          stub_bundle_with_env(bundle_env(File.realpath(dir)))
           Bundler::LockfileParser.any_instance.expects(:dependencies).returns({})
           run_script(dir)
         end
@@ -308,12 +288,8 @@ class SetupBundlerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       Dir.chdir(dir) do
         bundle_gemfile = Pathname.new(".ruby-lsp").expand_path(Dir.pwd) + "Gemfile"
-        Object.any_instance.expects(:system).with(
-          bundle_env(dir, bundle_gemfile.to_s),
-          "(bundle check || bundle install) 1>&2",
-        ).returns(true)
-
         Bundler.with_unbundled_env do
+          stub_bundle_with_env(bundle_env(dir, bundle_gemfile.to_s))
           run_script(File.realpath(dir), branch: "test-branch")
         end
 
@@ -325,48 +301,13 @@ class SetupBundlerTest < Minitest::Test
     end
   end
 
-  def test_install_prerelease_versions_if_experimental_is_true
-    Dir.mktmpdir do |dir|
-      Dir.chdir(dir) do
-        File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
-          source "https://rubygems.org"
-          gem "rdoc"
-        GEMFILE
-
-        capture_subprocess_io do
-          Bundler.with_unbundled_env do
-            # Run bundle install to generate the lockfile
-            system("bundle install")
-
-            # Run the script once to generate a custom bundle
-            run_script(dir)
-          end
-        end
-
-        capture_subprocess_io do
-          Object.any_instance.expects(:system).with(
-            bundle_env(dir, ".ruby-lsp/Gemfile"),
-            "((bundle check && bundle update ruby-lsp debug --pre) || bundle install) 1>&2",
-          ).returns(true)
-
-          Bundler.with_unbundled_env do
-            run_script(dir, experimental: true)
-          end
-        end
-      end
-    end
-  end
-
   def test_returns_bundle_app_config_if_there_is_local_config
     Dir.mktmpdir do |dir|
       Dir.chdir(dir) do
         bundle_gemfile = Pathname.new(".ruby-lsp").expand_path(Dir.pwd) + "Gemfile"
         Bundler.with_unbundled_env do
           Bundler.settings.temporary(without: "production") do
-            Object.any_instance.expects(:system).with(
-              bundle_env(dir, bundle_gemfile.to_s),
-              "(bundle check || bundle install) 1>&2",
-            ).returns(true)
+            stub_bundle_with_env(bundle_env(dir, bundle_gemfile.to_s))
 
             run_script(File.realpath(dir))
           end
@@ -492,11 +433,8 @@ class SetupBundlerTest < Minitest::Test
           end
         end
 
-        Object.any_instance.expects(:system).with(
-          bundle_env(dir, ".ruby-lsp/Gemfile"),
-          "(bundle check || bundle install) 1>&2",
-        ).returns(true)
         Bundler.with_unbundled_env do
+          stub_bundle_with_env(bundle_env(dir, ".ruby-lsp/Gemfile"))
           run_script(dir)
         end
 
@@ -524,11 +462,8 @@ class SetupBundlerTest < Minitest::Test
             end
           end
 
-          Object.any_instance.expects(:system).with(
-            bundle_env(dir, ".ruby-lsp/Gemfile"),
-            "(bundle check || bundle install) 1>&2",
-          ).returns(true)
           Bundler.with_unbundled_env do
+            stub_bundle_with_env(bundle_env(dir, ".ruby-lsp/Gemfile"))
             run_script(dir)
           end
 
@@ -606,6 +541,58 @@ class SetupBundlerTest < Minitest::Test
     end
   end
 
+  def test_respects_overridden_bundle_path_when_there_is_bundle_config
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        File.write(File.join(dir, "gems.rb"), <<~GEMFILE)
+          source "https://rubygems.org"
+          gem "irb"
+        GEMFILE
+
+        Bundler.with_unbundled_env do
+          vendor_path = File.join(dir, "vendor", "bundle")
+
+          system("bundle config --local path #{File.join("vendor", "bundle")}")
+          assert_path_exists(File.join(dir, ".bundle", "config"))
+
+          capture_subprocess_io do
+            system("bundle install")
+            assert_path_exists(vendor_path)
+
+            run_script(dir)
+          end
+        end
+
+        refute_path_exists(File.join(dir, ".ruby-lsp", "vendor"))
+      end
+    end
+  end
+
+  def test_uses_correct_bundler_env_when_there_is_bundle_config
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+          source "https://rubygems.org"
+          gem "irb"
+        GEMFILE
+
+        Bundler.with_unbundled_env do
+          system("bundle config set --local with production staging")
+
+          assert_path_exists(File.join(dir, ".bundle", "config"))
+
+          capture_subprocess_io do
+            system("bundle install")
+
+            env = run_script(dir)
+
+            assert_equal("production:staging", env["BUNDLE_WITH"])
+          end
+        end
+      end
+    end
+  end
+
   private
 
   def with_default_external_encoding(encoding, &block)
@@ -635,27 +622,50 @@ class SetupBundlerTest < Minitest::Test
   # This method runs the script and then immediately unloads it. This allows us to make assertions against the effects
   # of running the script multiple times
   def run_script(path = Dir.pwd, expected_path: nil, **options)
-    bundle_path = T.let(nil, T.nilable(String))
+    env = T.let({}, T::Hash[String, String])
 
     stdout, _stderr = capture_subprocess_io do
-      _bundle_gemfile, bundle_path = RubyLsp::SetupBundler.new(path, **options).setup!
+      env = RubyLsp::SetupBundler.new(path, **options).setup!
+      assert_equal(expected_path, env["BUNDLE_PATH"]) if expected_path
     end
 
     assert_empty(stdout)
-    assert_equal(expected_path, bundle_path) if expected_path
+    env
+  end
+
+  # This method needs to be called inside the `Bundler.with_unbundled_env` block IF the command you want to test is
+  # inside it.
+  def stub_bundle_with_env(env, command = "(bundle check || bundle install) 1>&2")
+    Object.any_instance.expects(:system).with do |actual_env, actual_command|
+      actual_env.delete_if { |k, _v| k.start_with?("BUNDLE_PKGS") }
+      actual_env.all? { |k, v| env[k] == v } && actual_command == command
+    end.returns(true)
   end
 
   def bundle_env(base_path = Dir.pwd, bundle_gemfile = "Gemfile")
     bundle_gemfile_path = Pathname.new(base_path).join(bundle_gemfile)
-    path = Bundler.settings["path"]
 
-    env = {}
-    env["BUNDLE_PATH"] = File.expand_path(path, base_path) if path
+    settings = begin
+      local_config_path = File.join(base_path, ".bundle")
+      Dir.exist?(local_config_path) ? Bundler::Settings.new(local_config_path) : Bundler::Settings.new
+    rescue Bundler::GemfileNotFound
+      Bundler::Settings.new
+    end
+
+    env = settings.all.to_h do |e|
+      key = Bundler::Settings.key_for(e)
+      value = Array(settings[e]).join(":").tr(" ", ":")
+
+      [key, value]
+    end
+
+    if env["BUNDLE_PATH"]
+      env["BUNDLE_PATH"] = File.expand_path(env["BUNDLE_PATH"], base_path)
+    end
+
     env["BUNDLE_GEMFILE"] =
       bundle_gemfile_path.absolute? ? bundle_gemfile_path.to_s : bundle_gemfile_path.expand_path(Dir.pwd).to_s
 
-    local_config_path = File.join(Dir.pwd, ".bundle")
-    env["BUNDLE_APP_CONFIG"] = local_config_path if Dir.exist?(local_config_path)
     env
   end
 end

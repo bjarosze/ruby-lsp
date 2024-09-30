@@ -5,27 +5,9 @@ require "ruby_lsp/listeners/definition"
 
 module RubyLsp
   module Requests
-    # ![Definition demo](../../definition.gif)
-    #
     # The [definition
     # request](https://microsoft.github.io/language-server-protocol/specification#textDocument_definition) jumps to the
     # definition of the symbol under the cursor.
-    #
-    # Currently supported targets:
-    #
-    # - Classes
-    # - Modules
-    # - Constants
-    # - Require paths
-    # - Methods invoked on self only and on receivers where the type is unknown
-    # - Instance variables
-    #
-    # # Example
-    #
-    # ```ruby
-    # require "some_gem/file" # <- Request go to definition on this string will take you to the file
-    # Product.new # <- Request go to definition on this class name will take you to its declaration.
-    # ```
     class Definition < Request
       extend T::Sig
       extend T::Generic
@@ -53,8 +35,12 @@ module RubyLsp
         )
         @dispatcher = dispatcher
 
-        node_context = document.locate_node(
-          position,
+        char_position = document.create_scanner.find_char_position(position)
+        delegate_request_if_needed!(global_state, document, char_position)
+
+        node_context = RubyDocument.locate(
+          document.parse_result.value,
+          char_position,
           node_types: [
             Prism::CallNode,
             Prism::ConstantReadNode,

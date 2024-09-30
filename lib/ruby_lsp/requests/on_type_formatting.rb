@@ -3,18 +3,8 @@
 
 module RubyLsp
   module Requests
-    # ![On type formatting demo](../../on_type_formatting.gif)
-    #
     # The [on type formatting](https://microsoft.github.io/language-server-protocol/specification#textDocument_onTypeFormatting)
     # request formats code as the user is typing. For example, automatically adding `end` to class definitions.
-    #
-    # # Example
-    #
-    # ```ruby
-    # class Foo # <-- upon adding a line break, on type formatting is triggered
-    #   # <-- cursor ends up here
-    # end # <-- end is automatically added
-    # ```
     class OnTypeFormatting < Request
       extend T::Sig
 
@@ -73,7 +63,7 @@ module RubyLsp
           if (comment_match = @previous_line.match(/^#(\s*)/))
             handle_comment_line(T.must(comment_match[1]))
           elsif @document.syntax_error?
-            match = /(?<=<<(-|~))(?<quote>['"`]?)(?<delimiter>\w+)\k<quote>/.match(@previous_line)
+            match = /(<<((-|~)?))(?<quote>['"`]?)(?<delimiter>\w+)\k<quote>/.match(@previous_line)
             heredoc_delimiter = match && match.named_captures["delimiter"]
 
             if heredoc_delimiter
