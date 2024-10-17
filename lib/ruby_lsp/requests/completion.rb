@@ -57,6 +57,7 @@ module RubyLsp
             Prism::InstanceVariableTargetNode,
             Prism::InstanceVariableWriteNode,
           ],
+          code_units_cache: document.code_units_cache,
         )
         @response_builder = T.let(
           ResponseBuilders::CollectionResponseBuilder[Interface::CompletionItem].new,

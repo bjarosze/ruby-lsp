@@ -6,10 +6,18 @@ module RubyLsp
     extend T::Sig
     extend T::Generic
 
+    ParseResultType = type_member { { fixed: Prism::ParseResult } }
+
     sig { returns(String) }
     attr_reader :host_language_source
 
-    ParseResultType = type_member { { fixed: Prism::ParseResult } }
+    sig do
+      returns(T.any(
+        T.proc.params(arg0: Integer).returns(Integer),
+        Prism::CodeUnitsCache,
+      ))
+    end
+    attr_reader :code_units_cache
 
     sig { params(source: String, version: Integer, uri: URI::Generic, encoding: Encoding).void }
     def initialize(source:, version:, uri:, encoding: Encoding::UTF_8)
@@ -17,6 +25,10 @@ module RubyLsp
       # overrides this with the proper virtual host language source
       @host_language_source = T.let("", String)
       super
+      @code_units_cache = T.let(@parse_result.code_units_cache(@encoding), T.any(
+        T.proc.params(arg0: Integer).returns(Integer),
+        Prism::CodeUnitsCache,
+      ))
     end
 
     sig { override.returns(T::Boolean) }
@@ -27,8 +39,10 @@ module RubyLsp
       scanner = ERBScanner.new(@source)
       scanner.scan
       @host_language_source = scanner.host_language
-      # assigning empty scopes to turn Prism into eval mode
-      @parse_result = Prism.parse(scanner.ruby, scopes: [[]])
+      # Use partial script to avoid syntax errors in ERB files where keywords may be used without the full context in
+      # which they will be evaluated
+      @parse_result = Prism.parse(scanner.ruby, partial_script: true)
+      @code_units_cache = @parse_result.code_units_cache(@encoding)
       true
     end
 
@@ -49,7 +63,12 @@ module RubyLsp
       ).returns(NodeContext)
     end
     def locate_node(position, node_types: [])
-      RubyDocument.locate(@parse_result.value, create_scanner.find_char_position(position), node_types: node_types)
+      RubyDocument.locate(
+        @parse_result.value,
+        create_scanner.find_char_position(position),
+        code_units_cache: @code_units_cache,
+        node_types: node_types,
+      )
     end
 
     sig { params(char_position: Integer).returns(T.nilable(T::Boolean)) }

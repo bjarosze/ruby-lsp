@@ -23,10 +23,11 @@ module RubyLsp
         end
       end
 
-      sig { params(document: RubyDocument, code_action: T::Hash[Symbol, T.untyped]).void }
-      def initialize(document, code_action)
+      sig { params(document: RubyDocument, global_state: GlobalState, code_action: T::Hash[Symbol, T.untyped]).void }
+      def initialize(document, global_state, code_action)
         super()
         @document = document
+        @global_state = global_state
         @code_action = code_action
       end
 
@@ -98,7 +99,13 @@ module RubyLsp
 
         # Find the closest statements node, so that we place the refactor in a valid position
         node_context = RubyDocument
-          .locate(@document.parse_result.value, start_index, node_types: [Prism::StatementsNode, Prism::BlockNode])
+          .locate(@document.parse_result.value,
+            start_index,
+            node_types: [
+              Prism::StatementsNode,
+              Prism::BlockNode,
+            ],
+            code_units_cache: @document.code_units_cache)
 
         closest_statements = node_context.node
         parent_statements = node_context.parent
@@ -191,7 +198,12 @@ module RubyLsp
         extracted_source = T.must(@document.source[start_index...end_index])
 
         # Find the closest method declaration node, so that we place the refactor in a valid position
-        node_context = RubyDocument.locate(@document.parse_result.value, start_index, node_types: [Prism::DefNode])
+        node_context = RubyDocument.locate(
+          @document.parse_result.value,
+          start_index,
+          node_types: [Prism::DefNode],
+          code_units_cache: @document.code_units_cache,
+        )
         closest_node = node_context.node
         return Error::InvalidTargetRange unless closest_node
 

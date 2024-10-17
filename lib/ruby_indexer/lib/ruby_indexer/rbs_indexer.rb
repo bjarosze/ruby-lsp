@@ -5,6 +5,8 @@ module RubyIndexer
   class RBSIndexer
     extend T::Sig
 
+    HAS_UNTYPED_FUNCTION = T.let(!!defined?(RBS::Types::UntypedFunction), T::Boolean)
+
     sig { params(index: Index).void }
     def initialize(index)
       @index = index
@@ -42,6 +44,8 @@ module RubyIndexer
       when RBS::AST::Declarations::Constant
         namespace_nesting = declaration.name.namespace.path.map(&:to_s)
         handle_constant(declaration, namespace_nesting, pathname.to_s)
+      when RBS::AST::Declarations::Global
+        handle_global_variable(declaration, pathname)
       else # rubocop:disable Style/EmptyElse
         # Other kinds not yet handled
       end
@@ -126,7 +130,16 @@ module RubyIndexer
 
       real_owner = member.singleton? ? @index.existing_or_new_singleton_class(owner.name) : owner
       signatures = signatures(member)
-      @index.add(Entry::Method.new(name, file_path, location, location, comments, signatures, visibility, real_owner))
+      @index.add(Entry::Method.new(
+        name,
+        file_path,
+        location,
+        location,
+        comments,
+        signatures,
+        visibility,
+        real_owner,
+      ))
     end
 
     sig { params(member: RBS::AST::Members::MethodDefinition).returns(T::Array[Entry::Signature]) }
@@ -139,13 +152,23 @@ module RubyIndexer
 
     sig { params(overload: RBS::AST::Members::MethodDefinition::Overload).returns(T::Array[Entry::Parameter]) }
     def process_overload(overload)
-      function = T.cast(overload.method_type.type, RBS::Types::Function)
-      parameters = parse_arguments(function)
+      function = overload.method_type.type
 
-      block = overload.method_type.block
-      parameters << Entry::BlockParameter.anonymous if block&.required
+      if function.is_a?(RBS::Types::Function)
+        parameters = parse_arguments(function)
 
-      parameters
+        block = overload.method_type.block
+        parameters << Entry::BlockParameter.anonymous if block&.required
+        return parameters
+      end
+
+      # Untyped functions are a new RBS feature (since v3.6.0) to declare methods that accept any parameters. For our
+      # purposes, accepting any argument is equivalent to `...`
+      if HAS_UNTYPED_FUNCTION && function.is_a?(RBS::Types::UntypedFunction)
+        [Entry::ForwardingParameter.new]
+      else
+        []
+      end
     end
 
     sig { params(function: RBS::Types::Function).returns(T::Array[Entry::Parameter]) }
@@ -248,6 +271,21 @@ module RubyIndexer
       ))
     end
 
+    sig { params(declaration: RBS::AST::Declarations::Global, pathname: Pathname).void }
+    def handle_global_variable(declaration, pathname)
+      name = declaration.name.to_s
+      file_path = pathname.to_s
+      location = to_ruby_indexer_location(declaration.location)
+      comments = comments_to_string(declaration)
+
+      @index.add(Entry::GlobalVariable.new(
+        name,
+        file_path,
+        location,
+        comments,
+      ))
+    end
+
     sig { params(member: RBS::AST::Members::Alias, owner_entry: Entry::Namespace).void }
     def handle_signature_alias(member, owner_entry)
       file_path = member.location.buffer.name
@@ -270,6 +308,7 @@ module RubyIndexer
         RBS::AST::Declarations::Class,
         RBS::AST::Declarations::Module,
         RBS::AST::Declarations::Constant,
+        RBS::AST::Declarations::Global,
         RBS::AST::Members::MethodDefinition,
         RBS::AST::Members::Alias,
       )).returns(T.nilable(String))

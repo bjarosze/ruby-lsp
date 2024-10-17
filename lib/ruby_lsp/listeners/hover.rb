@@ -13,6 +13,12 @@ module RubyLsp
           Prism::ConstantReadNode,
           Prism::ConstantWriteNode,
           Prism::ConstantPathNode,
+          Prism::GlobalVariableAndWriteNode,
+          Prism::GlobalVariableOperatorWriteNode,
+          Prism::GlobalVariableOrWriteNode,
+          Prism::GlobalVariableReadNode,
+          Prism::GlobalVariableTargetNode,
+          Prism::GlobalVariableWriteNode,
           Prism::InstanceVariableReadNode,
           Prism::InstanceVariableAndWriteNode,
           Prism::InstanceVariableOperatorWriteNode,
@@ -24,6 +30,7 @@ module RubyLsp
           Prism::InterpolatedStringNode,
           Prism::SuperNode,
           Prism::ForwardingSuperNode,
+          Prism::YieldNode,
         ],
         T::Array[T.class_of(Prism::Node)],
       )
@@ -61,6 +68,12 @@ module RubyLsp
           :on_constant_write_node_enter,
           :on_constant_path_node_enter,
           :on_call_node_enter,
+          :on_global_variable_and_write_node_enter,
+          :on_global_variable_operator_write_node_enter,
+          :on_global_variable_or_write_node_enter,
+          :on_global_variable_read_node_enter,
+          :on_global_variable_target_node_enter,
+          :on_global_variable_write_node_enter,
           :on_instance_variable_read_node_enter,
           :on_instance_variable_write_node_enter,
           :on_instance_variable_and_write_node_enter,
@@ -71,6 +84,7 @@ module RubyLsp
           :on_forwarding_super_node_enter,
           :on_string_node_enter,
           :on_interpolated_string_node_enter,
+          :on_yield_node_enter,
         )
       end
 
@@ -126,6 +140,36 @@ module RubyLsp
         handle_method_hover(message)
       end
 
+      sig { params(node: Prism::GlobalVariableAndWriteNode).void }
+      def on_global_variable_and_write_node_enter(node)
+        handle_global_variable_hover(node.name.to_s)
+      end
+
+      sig { params(node: Prism::GlobalVariableOperatorWriteNode).void }
+      def on_global_variable_operator_write_node_enter(node)
+        handle_global_variable_hover(node.name.to_s)
+      end
+
+      sig { params(node: Prism::GlobalVariableOrWriteNode).void }
+      def on_global_variable_or_write_node_enter(node)
+        handle_global_variable_hover(node.name.to_s)
+      end
+
+      sig { params(node: Prism::GlobalVariableReadNode).void }
+      def on_global_variable_read_node_enter(node)
+        handle_global_variable_hover(node.name.to_s)
+      end
+
+      sig { params(node: Prism::GlobalVariableTargetNode).void }
+      def on_global_variable_target_node_enter(node)
+        handle_global_variable_hover(node.name.to_s)
+      end
+
+      sig { params(node: Prism::GlobalVariableWriteNode).void }
+      def on_global_variable_write_node_enter(node)
+        handle_global_variable_hover(node.name.to_s)
+      end
+
       sig { params(node: Prism::InstanceVariableReadNode).void }
       def on_instance_variable_read_node_enter(node)
         handle_instance_variable_hover(node.name.to_s)
@@ -166,6 +210,11 @@ module RubyLsp
         handle_super_node_hover
       end
 
+      sig { params(node: Prism::YieldNode).void }
+      def on_yield_node_enter(node)
+        handle_keyword_documentation(node.keyword)
+      end
+
       private
 
       sig { params(node: T.any(Prism::InterpolatedStringNode, Prism::StringNode)).void }
@@ -191,6 +240,18 @@ module RubyLsp
 
           @response_builder.push(message, category: :documentation)
         end
+      end
+
+      sig { params(keyword: String).void }
+      def handle_keyword_documentation(keyword)
+        content = KEYWORD_DOCS[keyword]
+        return unless content
+
+        doc_path = File.join(STATIC_DOCS_PATH, "#{keyword}.md")
+
+        @response_builder.push("```ruby\n#{keyword}\n```", category: :title)
+        @response_builder.push("[Read more](#{doc_path})", category: :links)
+        @response_builder.push(content, category: :documentation)
       end
 
       sig { void }
@@ -244,6 +305,16 @@ module RubyLsp
         end
       rescue RubyIndexer::Index::NonExistingNamespaceError
         # If by any chance we haven't indexed the owner, then there's no way to find the right declaration
+      end
+
+      sig { params(name: String).void }
+      def handle_global_variable_hover(name)
+        entries = @index[name]
+        return unless entries
+
+        categorized_markdown_from_index_entries(name, entries).each do |category, content|
+          @response_builder.push(content, category: category)
+        end
       end
 
       sig { params(name: String, location: Prism::Location).void }

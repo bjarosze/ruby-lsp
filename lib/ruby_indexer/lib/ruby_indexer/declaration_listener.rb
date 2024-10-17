@@ -33,6 +33,10 @@ module RubyIndexer
         T::Hash[Integer, Prism::Comment],
       )
       @inside_def = T.let(false, T::Boolean)
+      @code_units_cache = T.let(
+        parse_result.code_units_cache(@index.configuration.encoding),
+        T.any(T.proc.params(arg0: Integer).returns(Integer), Prism::CodeUnitsCache),
+      )
 
       # The nesting stack we're currently inside. Used to determine the fully qualified name of constants, but only
       # stored by unresolved aliases which need the original nesting to be lazily resolved
@@ -65,6 +69,11 @@ module RubyIndexer
         :on_constant_or_write_node_enter,
         :on_constant_and_write_node_enter,
         :on_constant_operator_write_node_enter,
+        :on_global_variable_and_write_node_enter,
+        :on_global_variable_operator_write_node_enter,
+        :on_global_variable_or_write_node_enter,
+        :on_global_variable_target_node_enter,
+        :on_global_variable_write_node_enter,
         :on_instance_variable_write_node_enter,
         :on_instance_variable_and_write_node_enter,
         :on_instance_variable_operator_write_node_enter,
@@ -106,8 +115,8 @@ module RubyIndexer
       entry = Entry::Class.new(
         nesting,
         @file_path,
-        node.location,
-        constant_path.location,
+        Location.from_prism_location(node.location, @code_units_cache),
+        Location.from_prism_location(constant_path.location, @code_units_cache),
         comments,
         parent_class,
       )
@@ -132,7 +141,13 @@ module RubyIndexer
 
       comments = collect_comments(node)
 
-      entry = Entry::Module.new(actual_nesting(name), @file_path, node.location, constant_path.location, comments)
+      entry = Entry::Module.new(
+        actual_nesting(name),
+        @file_path,
+        Location.from_prism_location(node.location, @code_units_cache),
+        Location.from_prism_location(constant_path.location, @code_units_cache),
+        comments,
+      )
 
       @owner_stack << entry
       @index.add(entry)
@@ -161,13 +176,17 @@ module RubyIndexer
 
         if existing_entries
           entry = T.must(existing_entries.first)
-          entry.update_singleton_information(node.location, expression.location, collect_comments(node))
+          entry.update_singleton_information(
+            Location.from_prism_location(node.location, @code_units_cache),
+            Location.from_prism_location(expression.location, @code_units_cache),
+            collect_comments(node),
+          )
         else
           entry = Entry::SingletonClass.new(
             real_nesting,
             @file_path,
-            node.location,
-            expression.location,
+            Location.from_prism_location(node.location, @code_units_cache),
+            Location.from_prism_location(expression.location, @code_units_cache),
             collect_comments(node),
             nil,
           )
@@ -296,7 +315,7 @@ module RubyIndexer
       end
 
       @enhancements.each do |enhancement|
-        enhancement.on_call_node(@index, @owner_stack.last, node, @file_path)
+        enhancement.on_call_node(@index, @owner_stack.last, node, @file_path, @code_units_cache)
       rescue StandardError => e
         @indexing_errors << "Indexing error in #{@file_path} with '#{enhancement.class.name}' enhancement: #{e.message}"
       end
@@ -326,8 +345,8 @@ module RubyIndexer
         @index.add(Entry::Method.new(
           method_name,
           @file_path,
-          node.location,
-          node.name_loc,
+          Location.from_prism_location(node.location, @code_units_cache),
+          Location.from_prism_location(node.name_loc, @code_units_cache),
           comments,
           [Entry::Signature.new(list_params(node.parameters))],
           current_visibility,
@@ -342,8 +361,8 @@ module RubyIndexer
           @index.add(Entry::Method.new(
             method_name,
             @file_path,
-            node.location,
-            node.name_loc,
+            Location.from_prism_location(node.location, @code_units_cache),
+            Location.from_prism_location(node.name_loc, @code_units_cache),
             comments,
             [Entry::Signature.new(list_params(node.parameters))],
             current_visibility,
@@ -364,6 +383,31 @@ module RubyIndexer
         @owner_stack.pop
         @stack.pop
       end
+    end
+
+    sig { params(node: Prism::GlobalVariableAndWriteNode).void }
+    def on_global_variable_and_write_node_enter(node)
+      handle_global_variable(node, node.name_loc)
+    end
+
+    sig { params(node: Prism::GlobalVariableOperatorWriteNode).void }
+    def on_global_variable_operator_write_node_enter(node)
+      handle_global_variable(node, node.name_loc)
+    end
+
+    sig { params(node: Prism::GlobalVariableOrWriteNode).void }
+    def on_global_variable_or_write_node_enter(node)
+      handle_global_variable(node, node.name_loc)
+    end
+
+    sig { params(node: Prism::GlobalVariableTargetNode).void }
+    def on_global_variable_target_node_enter(node)
+      handle_global_variable(node, node.location)
+    end
+
+    sig { params(node: Prism::GlobalVariableWriteNode).void }
+    def on_global_variable_write_node_enter(node)
+      handle_global_variable(node, node.name_loc)
     end
 
     sig { params(node: Prism::InstanceVariableWriteNode).void }
@@ -401,13 +445,37 @@ module RubyIndexer
           node.old_name.slice,
           @owner_stack.last,
           @file_path,
-          node.new_name.location,
+          Location.from_prism_location(node.new_name.location, @code_units_cache),
           comments,
         ),
       )
     end
 
     private
+
+    sig do
+      params(
+        node: T.any(
+          Prism::GlobalVariableAndWriteNode,
+          Prism::GlobalVariableOperatorWriteNode,
+          Prism::GlobalVariableOrWriteNode,
+          Prism::GlobalVariableTargetNode,
+          Prism::GlobalVariableWriteNode,
+        ),
+        loc: Prism::Location,
+      ).void
+    end
+    def handle_global_variable(node, loc)
+      name = node.name.to_s
+      comments = collect_comments(node)
+
+      @index.add(Entry::GlobalVariable.new(
+        name,
+        @file_path,
+        Location.from_prism_location(loc, @code_units_cache),
+        comments,
+      ))
+    end
 
     sig do
       params(
@@ -433,7 +501,13 @@ module RubyIndexer
         owner = @index.existing_or_new_singleton_class(owner.name)
       end
 
-      @index.add(Entry::InstanceVariable.new(name, @file_path, loc, collect_comments(node), owner))
+      @index.add(Entry::InstanceVariable.new(
+        name,
+        @file_path,
+        Location.from_prism_location(loc, @code_units_cache),
+        collect_comments(node),
+        owner,
+      ))
     end
 
     sig { params(node: Prism::CallNode).void }
@@ -494,7 +568,7 @@ module RubyIndexer
           old_name_value,
           @owner_stack.last,
           @file_path,
-          new_name.location,
+          Location.from_prism_location(new_name.location, @code_units_cache),
           comments,
         ),
       )
@@ -525,19 +599,45 @@ module RubyIndexer
       @index.add(
         case value
         when Prism::ConstantReadNode, Prism::ConstantPathNode
-          Entry::UnresolvedConstantAlias.new(value.slice, @stack.dup, name, @file_path, node.location, comments)
+          Entry::UnresolvedConstantAlias.new(
+            value.slice,
+            @stack.dup,
+            name,
+            @file_path,
+            Location.from_prism_location(node.location, @code_units_cache),
+            comments,
+          )
         when Prism::ConstantWriteNode, Prism::ConstantAndWriteNode, Prism::ConstantOrWriteNode,
         Prism::ConstantOperatorWriteNode
 
           # If the right hand side is another constant assignment, we need to visit it because that constant has to be
           # indexed too
-          Entry::UnresolvedConstantAlias.new(value.name.to_s, @stack.dup, name, @file_path, node.location, comments)
+          Entry::UnresolvedConstantAlias.new(
+            value.name.to_s,
+            @stack.dup,
+            name,
+            @file_path,
+            Location.from_prism_location(node.location, @code_units_cache),
+            comments,
+          )
         when Prism::ConstantPathWriteNode, Prism::ConstantPathOrWriteNode, Prism::ConstantPathOperatorWriteNode,
         Prism::ConstantPathAndWriteNode
 
-          Entry::UnresolvedConstantAlias.new(value.target.slice, @stack.dup, name, @file_path, node.location, comments)
+          Entry::UnresolvedConstantAlias.new(
+            value.target.slice,
+            @stack.dup,
+            name,
+            @file_path,
+            Location.from_prism_location(node.location, @code_units_cache),
+            comments,
+          )
         else
-          Entry::Constant.new(name, @file_path, node.location, comments)
+          Entry::Constant.new(
+            name,
+            @file_path,
+            Location.from_prism_location(node.location, @code_units_cache),
+            comments,
+          )
         end,
       )
     end
@@ -600,7 +700,14 @@ module RubyIndexer
         next unless name && loc
 
         if reader
-          @index.add(Entry::Accessor.new(name, @file_path, loc, comments, current_visibility, @owner_stack.last))
+          @index.add(Entry::Accessor.new(
+            name,
+            @file_path,
+            Location.from_prism_location(loc, @code_units_cache),
+            comments,
+            current_visibility,
+            @owner_stack.last,
+          ))
         end
 
         next unless writer
@@ -608,7 +715,7 @@ module RubyIndexer
         @index.add(Entry::Accessor.new(
           "#{name}=",
           @file_path,
-          loc,
+          Location.from_prism_location(loc, @code_units_cache),
           comments,
           current_visibility,
           @owner_stack.last,

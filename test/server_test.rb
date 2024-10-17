@@ -28,8 +28,8 @@ class ServerTest < Minitest::Test
     hash = JSON.parse(result.response.to_json)
     capabilities = hash["capabilities"]
 
-    # TextSynchronization + encodings + semanticHighlighting + experimental
-    assert_equal(4, capabilities.length)
+    # TextSynchronization + encodings + semanticHighlighting + range formatting + experimental
+    assert_equal(5, capabilities.length)
     assert_includes(capabilities, "semanticTokensProvider")
   end
 
@@ -186,8 +186,10 @@ class ServerTest < Minitest::Test
 
     notification = @server.pop_response
     assert_equal("window/showMessage", notification.method)
+    expected_message = "Error while indexing (see [troubleshooting steps]" \
+      "(https://shopify.github.io/ruby-lsp/troubleshooting#indexing)): boom!"
     assert_equal(
-      "Error while indexing: boom!",
+      expected_message,
       T.cast(notification.params, RubyLsp::Interface::ShowMessageParams).message,
     )
   end
@@ -419,7 +421,11 @@ class ServerTest < Minitest::Test
     content = log.params.message
 
     assert_match(/boom/, content)
-    assert_match(%r{ruby-lsp/lib/ruby_lsp/server\.rb:\d+:in `process_message'}, content)
+    if RUBY_VERSION >= "3.4"
+      assert_match(%r{ruby-lsp/lib/ruby_lsp/server\.rb:\d+:in 'RubyLsp::Server#process_message'}, content)
+    else
+      assert_match(%r{ruby-lsp/lib/ruby_lsp/server\.rb:\d+:in `process_message'}, content)
+    end
   end
 
   def test_changed_file_only_indexes_ruby
@@ -455,9 +461,12 @@ class ServerTest < Minitest::Test
     addons_info = @server.pop_response.response
 
     assert_equal("Foo", addons_info[0][:name])
+    assert_equal("0.1.0", addons_info[0][:version])
     refute(addons_info[0][:errored])
 
     assert_equal("Bar", addons_info[1][:name])
+    # It doesn't define a `version` method
+    assert_nil(addons_info[1][:version])
     assert(addons_info[1][:errored])
   ensure
     RubyLsp::Addon.addons.clear
@@ -697,6 +706,10 @@ class ServerTest < Minitest::Test
       end
 
       def deactivate; end
+
+      def version
+        "0.1.0"
+      end
     end
 
     Class.new(RubyLsp::Addon) do

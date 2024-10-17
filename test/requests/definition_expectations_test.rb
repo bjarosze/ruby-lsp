@@ -136,6 +136,31 @@ class DefinitionExpectationsTest < ExpectationsTestRunner
     end
   end
 
+  def test_multibyte_character_precision
+    source = <<~RUBY
+      module Fほげ
+        module Bar
+          class Baz
+          end
+        end
+      end
+
+      Fほげ::Bar::Baz
+    RUBY
+
+    with_server(source, stub_no_typechecker: true) do |server, uri|
+      # Foo
+      server.process_message(
+        id: 1,
+        method: "textDocument/definition",
+        params: { textDocument: { uri: uri }, position: { line: 7, character: 0 } },
+      )
+      range = server.pop_response.response[0].attributes[:targetRange].attributes
+      range_hash = { start: range[:start].to_hash, end: range[:end].to_hash }
+      assert_equal({ start: { line: 0, character: 0 }, end: { line: 5, character: 3 } }, range_hash)
+    end
+  end
+
   def test_jumping_to_default_require_of_a_gem
     with_server("require \"bundler\"") do |server, uri|
       index = server.global_state.index
@@ -646,6 +671,27 @@ class DefinitionExpectationsTest < ExpectationsTestRunner
     end
   end
 
+  def test_definition_for_global_variables
+    source = <<~RUBY
+      $DEBUG
+    RUBY
+
+    with_server(source) do |server, uri|
+      index = server.instance_variable_get(:@global_state).index
+      RubyIndexer::RBSIndexer.new(index).index_ruby_core
+
+      server.process_message(
+        id: 1,
+        method: "textDocument/definition",
+        params: { textDocument: { uri: uri }, position: { character: 1, line: 0 } },
+      )
+      response = server.pop_response.response.first
+      assert_match(%r{/gems/rbs-.*/core/global_variables.rbs}, response.uri)
+      assert_equal(response.range.start.line, response.range.end.line)
+      assert_operator(response.range.start.character, :<, response.range.end.character)
+    end
+  end
+
   def test_definition_for_instance_variables
     source = <<~RUBY
       class Foo
@@ -1027,6 +1073,10 @@ class DefinitionExpectationsTest < ExpectationsTestRunner
       def deactivate; end
 
       def name; end
+
+      def version
+        "0.1.0"
+      end
     end
   end
 end

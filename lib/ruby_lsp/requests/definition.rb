@@ -46,6 +46,7 @@ module RubyLsp
             Prism::ConstantReadNode,
             Prism::ConstantPathNode,
             Prism::BlockArgumentNode,
+            Prism::GlobalVariableReadNode,
             Prism::InstanceVariableReadNode,
             Prism::InstanceVariableAndWriteNode,
             Prism::InstanceVariableOperatorWriteNode,
@@ -57,6 +58,7 @@ module RubyLsp
             Prism::SuperNode,
             Prism::ForwardingSuperNode,
           ],
+          code_units_cache: document.code_units_cache,
         )
 
         target = node_context.node

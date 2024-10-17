@@ -43,6 +43,8 @@ module RubyLsp
         text_document_semantic_tokens_range(message)
       when "textDocument/formatting"
         text_document_formatting(message)
+      when "textDocument/rangeFormatting"
+        text_document_range_formatting(message)
       when "textDocument/documentHighlight"
         text_document_document_highlight(message)
       when "textDocument/onTypeFormatting"
@@ -69,6 +71,10 @@ module RubyLsp
         text_document_did_save(message)
       when "textDocument/prepareTypeHierarchy"
         text_document_prepare_type_hierarchy(message)
+      when "textDocument/rename"
+        text_document_rename(message)
+      when "textDocument/references"
+        text_document_references(message)
       when "typeHierarchy/supertypes"
         type_hierarchy_supertypes(message)
       when "typeHierarchy/subtypes"
@@ -87,7 +93,16 @@ module RubyLsp
             id: message[:id],
             response:
               Addon.addons.map do |addon|
-                { name: addon.name, errored: addon.error? }
+                version_method = addon.method(:version)
+
+                # If the add-on doesn't define a `version` method, we'd be calling the abstract method defined by
+                # Sorbet, which would raise an error.
+                # Therefore, we only call the method if it's defined by the add-on itself
+                if version_method.owner != Addon
+                  version = addon.version
+                end
+
+                { name: addon.name, version: version, errored: addon.error? }
               end,
           ),
         )
@@ -125,9 +140,9 @@ module RubyLsp
       send_log_message("Error processing #{message[:method]}: #{e.full_message}", type: Constant::MessageType::ERROR)
     end
 
-    sig { void }
-    def load_addons
-      errors = Addon.load_addons(@global_state, @outgoing_queue)
+    sig { params(include_project_addons: T::Boolean).void }
+    def load_addons(include_project_addons: true)
+      errors = Addon.load_addons(@global_state, @outgoing_queue, include_project_addons: include_project_addons)
 
       if errors.any?
         send_log_message(
@@ -230,6 +245,9 @@ module RubyLsp
           workspace_symbol_provider: enabled_features["workspaceSymbol"] && !@global_state.has_type_checker,
           signature_help_provider: signature_help_provider,
           type_hierarchy_provider: type_hierarchy_provider,
+          rename_provider: !@global_state.has_type_checker,
+          references_provider: !@global_state.has_type_checker,
+          document_range_formatting_provider: true,
           experimental: {
             addon_detection: true,
           },
@@ -288,8 +306,9 @@ module RubyLsp
         rescue RuboCop::Error => e
           # The user may have provided unknown config switches in .rubocop or
           # is trying to load a non-existant config file.
-          send_message(Notification.window_show_error(
+          send_message(Notification.window_show_message(
             "RuboCop configuration error: #{e.message}. Formatting will not be available.",
+            type: Constant::MessageType::ERROR,
           ))
         end
       end
@@ -322,14 +341,18 @@ module RubyLsp
           language_id: language_id,
         )
 
-        if document.past_expensive_limit?
+        if document.past_expensive_limit? && text_document[:uri].scheme == "file"
+          log_message = <<~MESSAGE
+            The file #{text_document[:uri].path} is too long. For performance reasons, semantic highlighting and
+            diagnostics will be disabled.
+          MESSAGE
+
           send_message(
             Notification.new(
-              method: "window/showMessage",
-              params: Interface::ShowMessageParams.new(
+              method: "window/logMessage",
+              params: Interface::LogMessageParams.new(
                 type: Constant::MessageType::WARNING,
-                message: "This file is too long. For performance reasons, semantic highlighting and " \
-                  "diagnostics will be disabled",
+                message: log_message,
               ),
             ),
           )
@@ -509,6 +532,34 @@ module RubyLsp
     end
 
     sig { params(message: T::Hash[Symbol, T.untyped]).void }
+    def text_document_range_formatting(message)
+      # If formatter is set to `auto` but no supported formatting gem is found, don't attempt to format
+      if @global_state.formatter == "none"
+        send_empty_response(message[:id])
+        return
+      end
+
+      params = message[:params]
+      uri = params.dig(:textDocument, :uri)
+      # Do not format files outside of the workspace. For example, if someone is looking at a gem's source code, we
+      # don't want to format it
+      path = uri.to_standardized_path
+      unless path.nil? || path.start_with?(@global_state.workspace_path)
+        send_empty_response(message[:id])
+        return
+      end
+
+      document = @store.get(uri)
+      unless document.is_a?(RubyDocument)
+        send_empty_response(message[:id])
+        return
+      end
+
+      response = Requests::RangeFormatting.new(@global_state, document, params).perform
+      send_message(Result.new(id: message[:id], response: response))
+    end
+
+    sig { params(message: T::Hash[Symbol, T.untyped]).void }
     def text_document_formatting(message)
       # If formatter is set to `auto` but no supported formatting gem is found, don't attempt to format
       if @global_state.formatter == "none"
@@ -534,10 +585,16 @@ module RubyLsp
       response = Requests::Formatting.new(@global_state, document).perform
       send_message(Result.new(id: message[:id], response: response))
     rescue Requests::Request::InvalidFormatter => error
-      send_message(Notification.window_show_error("Configuration error: #{error.message}"))
+      send_message(Notification.window_show_message(
+        "Configuration error: #{error.message}",
+        type: Constant::MessageType::ERROR,
+      ))
       send_empty_response(message[:id])
     rescue StandardError, LoadError => error
-      send_message(Notification.window_show_error("Formatting error: #{error.message}"))
+      send_message(Notification.window_show_message(
+        "Formatting error: #{error.message}",
+        type: Constant::MessageType::ERROR,
+      ))
       send_empty_response(message[:id])
     end
 
@@ -601,6 +658,44 @@ module RubyLsp
             dispatcher,
             sorbet_level(document),
           ).perform,
+        ),
+      )
+    end
+
+    sig { params(message: T::Hash[Symbol, T.untyped]).void }
+    def text_document_rename(message)
+      params = message[:params]
+      document = @store.get(params.dig(:textDocument, :uri))
+
+      unless document.is_a?(RubyDocument)
+        send_empty_response(message[:id])
+        return
+      end
+
+      send_message(
+        Result.new(
+          id: message[:id],
+          response: Requests::Rename.new(@global_state, @store, document, params).perform,
+        ),
+      )
+    rescue Requests::Rename::InvalidNameError => e
+      send_message(Error.new(id: message[:id], code: Constant::ErrorCodes::REQUEST_FAILED, message: e.message))
+    end
+
+    sig { params(message: T::Hash[Symbol, T.untyped]).void }
+    def text_document_references(message)
+      params = message[:params]
+      document = @store.get(params.dig(:textDocument, :uri))
+
+      unless document.is_a?(RubyDocument)
+        send_empty_response(message[:id])
+        return
+      end
+
+      send_message(
+        Result.new(
+          id: message[:id],
+          response: Requests::References.new(@global_state, @store, document, params).perform,
         ),
       )
     end
@@ -676,30 +771,19 @@ module RubyLsp
       document = @store.get(uri)
 
       unless document.is_a?(RubyDocument)
-        send_message(Notification.window_show_error("Code actions are currently only available for Ruby documents"))
-        raise Requests::CodeActionResolve::CodeActionError
+        fail_request_and_notify(message[:id], "Code actions are currently only available for Ruby documents")
+        return
       end
 
-      result = Requests::CodeActionResolve.new(document, params).perform
+      result = Requests::CodeActionResolve.new(document, @global_state, params).perform
 
       case result
       when Requests::CodeActionResolve::Error::EmptySelection
-        send_message(Notification.window_show_error("Invalid selection for Extract Variable refactor"))
-        raise Requests::CodeActionResolve::CodeActionError
+        fail_request_and_notify(message[:id], "Invalid selection for extract variable refactor")
       when Requests::CodeActionResolve::Error::InvalidTargetRange
-        send_message(
-          Notification.window_show_error(
-            "Couldn't find an appropriate location to place extracted refactor",
-          ),
-        )
-        raise Requests::CodeActionResolve::CodeActionError
+        fail_request_and_notify(message[:id], "Couldn't find an appropriate location to place extracted refactor")
       when Requests::CodeActionResolve::Error::UnknownCodeAction
-        send_message(
-          Notification.window_show_error(
-            "Unknown code action",
-          ),
-        )
-        raise Requests::CodeActionResolve::CodeActionError
+        fail_request_and_notify(message[:id], "Unknown code action")
       else
         send_message(Result.new(id: message[:id], response: result))
       end
@@ -732,10 +816,16 @@ module RubyLsp
         ),
       )
     rescue Requests::Request::InvalidFormatter => error
-      send_message(Notification.window_show_error("Configuration error: #{error.message}"))
+      send_message(Notification.window_show_message(
+        "Configuration error: #{error.message}",
+        type: Constant::MessageType::ERROR,
+      ))
       send_empty_response(message[:id])
     rescue StandardError, LoadError => error
-      send_message(Notification.window_show_error("Error running diagnostics: #{error.message}"))
+      send_message(Notification.window_show_message(
+        "Error running diagnostics: #{error.message}",
+        type: Constant::MessageType::ERROR,
+      ))
       send_empty_response(message[:id])
     end
 
@@ -988,7 +1078,9 @@ module RubyLsp
             false
           end
         rescue StandardError => error
-          send_message(Notification.window_show_error("Error while indexing: #{error.message}"))
+          message = "Error while indexing (see [troubleshooting steps]" \
+            "(https://shopify.github.io/ruby-lsp/troubleshooting#indexing)): #{error.message}"
+          send_message(Notification.window_show_message(message, type: Constant::MessageType::ERROR))
         end
 
         # Indexing produces a high number of short lived object allocations. That might lead to some fragmentation and
@@ -1073,8 +1165,9 @@ module RubyLsp
         @global_state.formatter = "none"
 
         send_message(
-          Notification.window_show_error(
+          Notification.window_show_message(
             "Ruby LSP formatter is set to `rubocop` but RuboCop was not found in the Gemfile or gemspec.",
+            type: Constant::MessageType::ERROR,
           ),
         )
       end

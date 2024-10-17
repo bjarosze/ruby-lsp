@@ -31,7 +31,7 @@ module RubyIndexer
       params(
         name: String,
         file_path: String,
-        location: T.any(Prism::Location, RubyIndexer::Location),
+        location: Location,
         comments: T.nilable(String),
       ).void
     end
@@ -40,20 +40,7 @@ module RubyIndexer
       @file_path = file_path
       @comments = comments
       @visibility = T.let(Visibility::PUBLIC, Visibility)
-
-      @location = T.let(
-        if location.is_a?(Prism::Location)
-          Location.new(
-            location.start_line,
-            location.end_line,
-            location.start_column,
-            location.end_column,
-          )
-        else
-          location
-        end,
-        RubyIndexer::Location,
-      )
+      @location = location
     end
 
     sig { returns(T::Boolean) }
@@ -109,6 +96,10 @@ module RubyIndexer
         else
           ""
         end
+      rescue Errno::ENOENT
+        # If the file was deleted, but the entry hasn't been removed yet (could happen due to concurrency), then we do
+        # not want to fail. Just set the comments to an empty string
+        ""
       end
     end
 
@@ -147,8 +138,8 @@ module RubyIndexer
         params(
           nesting: T::Array[String],
           file_path: String,
-          location: T.any(Prism::Location, RubyIndexer::Location),
-          name_location: T.any(Prism::Location, Location),
+          location: Location,
+          name_location: Location,
           comments: T.nilable(String),
         ).void
       end
@@ -159,19 +150,7 @@ module RubyIndexer
 
         super(@name, file_path, location, comments)
 
-        @name_location = T.let(
-          if name_location.is_a?(Prism::Location)
-            Location.new(
-              name_location.start_line,
-              name_location.end_line,
-              name_location.start_column,
-              name_location.end_column,
-            )
-          else
-            name_location
-          end,
-          RubyIndexer::Location,
-        )
+        @name_location = name_location
       end
 
       sig { returns(T::Array[String]) }
@@ -208,8 +187,8 @@ module RubyIndexer
         params(
           nesting: T::Array[String],
           file_path: String,
-          location: T.any(Prism::Location, RubyIndexer::Location),
-          name_location: T.any(Prism::Location, Location),
+          location: Location,
+          name_location:  Location,
           comments: T.nilable(String),
           parent_class: T.nilable(String),
         ).void
@@ -228,21 +207,16 @@ module RubyIndexer
     class SingletonClass < Class
       extend T::Sig
 
-      sig { params(location: Prism::Location, name_location: Prism::Location, comments: T.nilable(String)).void }
+      sig do
+        params(
+          location: Location,
+          name_location: Location,
+          comments: T.nilable(String),
+        ).void
+      end
       def update_singleton_information(location, name_location, comments)
-        # Create a new RubyIndexer::Location object from the Prism location
-        @location = Location.new(
-          location.start_line,
-          location.end_line,
-          location.start_column,
-          location.end_column,
-        )
-        @name_location = Location.new(
-          name_location.start_line,
-          name_location.end_line,
-          name_location.start_column,
-          name_location.end_column,
-        )
+        @location = location
+        @name_location = name_location
         (@comments ||= +"") << comments if comments
       end
     end
@@ -359,7 +333,7 @@ module RubyIndexer
         params(
           name: String,
           file_path: String,
-          location: T.any(Prism::Location, RubyIndexer::Location),
+          location: Location,
           comments: T.nilable(String),
           visibility: Visibility,
           owner: T.nilable(Entry::Namespace),
@@ -426,8 +400,8 @@ module RubyIndexer
         params(
           name: String,
           file_path: String,
-          location: T.any(Prism::Location, RubyIndexer::Location),
-          name_location: T.any(Prism::Location, Location),
+          location: Location,
+          name_location: Location,
           comments: T.nilable(String),
           signatures: T::Array[Signature],
           visibility: Visibility,
@@ -437,19 +411,7 @@ module RubyIndexer
       def initialize(name, file_path, location, name_location, comments, signatures, visibility, owner) # rubocop:disable Metrics/ParameterLists
         super(name, file_path, location, comments, visibility, owner)
         @signatures = signatures
-        @name_location = T.let(
-          if name_location.is_a?(Prism::Location)
-            Location.new(
-              name_location.start_line,
-              name_location.end_line,
-              name_location.start_column,
-              name_location.end_column,
-            )
-          else
-            name_location
-          end,
-          RubyIndexer::Location,
-        )
+        @name_location = name_location
       end
     end
 
@@ -478,7 +440,7 @@ module RubyIndexer
           nesting: T::Array[String],
           name: String,
           file_path: String,
-          location: T.any(Prism::Location, RubyIndexer::Location),
+          location: Location,
           comments: T.nilable(String),
         ).void
       end
@@ -499,12 +461,20 @@ module RubyIndexer
 
       sig { params(target: String, unresolved_alias: UnresolvedConstantAlias).void }
       def initialize(target, unresolved_alias)
-        super(unresolved_alias.name, unresolved_alias.file_path, unresolved_alias.location, unresolved_alias.comments)
+        super(
+          unresolved_alias.name,
+          unresolved_alias.file_path,
+          unresolved_alias.location,
+          unresolved_alias.comments,
+        )
 
         @visibility = unresolved_alias.visibility
         @target = target
       end
     end
+
+    # Represents a global variable e.g.: $DEBUG
+    class GlobalVariable < Entry; end
 
     # Represents an instance variable e.g.: @a = 1
     class InstanceVariable < Entry
@@ -515,7 +485,7 @@ module RubyIndexer
         params(
           name: String,
           file_path: String,
-          location: T.any(Prism::Location, RubyIndexer::Location),
+          location: Location,
           comments: T.nilable(String),
           owner: T.nilable(Entry::Namespace),
         ).void
@@ -544,7 +514,7 @@ module RubyIndexer
           old_name: String,
           owner: T.nilable(Entry::Namespace),
           file_path: String,
-          location: T.any(Prism::Location, RubyIndexer::Location),
+          location: Location,
           comments: T.nilable(String),
         ).void
       end
@@ -567,7 +537,9 @@ module RubyIndexer
       sig { returns(T.nilable(Entry::Namespace)) }
       attr_reader :owner
 
-      sig { params(target: T.any(Member, MethodAlias), unresolved_alias: UnresolvedMethodAlias).void }
+      sig do
+        params(target: T.any(Member, MethodAlias), unresolved_alias: UnresolvedMethodAlias).void
+      end
       def initialize(target, unresolved_alias)
         full_comments = +"Alias for #{target.name}\n"
         full_comments << "#{unresolved_alias.comments}\n"

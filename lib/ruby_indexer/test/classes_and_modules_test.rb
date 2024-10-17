@@ -159,6 +159,17 @@ module RubyIndexer
       assert_entry("Foo::Bar", Entry::Module, "/fake/path/foo.rb:4-2:5-5")
     end
 
+    def test_nested_modules_and_classes_with_multibyte_characters
+      index(<<~RUBY)
+        module A動物
+          class Bねこ; end
+        end
+      RUBY
+
+      assert_entry("A動物", Entry::Module, "/fake/path/foo.rb:0-0:2-3")
+      assert_entry("A動物::Bねこ", Entry::Class, "/fake/path/foo.rb:1-2:1-16")
+    end
+
     def test_nested_modules_and_classes
       index(<<~RUBY)
         module Foo
@@ -618,6 +629,18 @@ module RubyIndexer
         This class allows listeners to access contextual information about a node in the AST, such as its parent,
         its namespace nesting, and the surrounding CallNode (e.g. a method call).
       COMMENTS
+    end
+
+    def test_lazy_comment_fetching_does_not_fail_if_file_gets_deleted
+      indexable = IndexablePath.new("#{Dir.pwd}/lib", "lib/ruby_lsp/does_not_exist.rb")
+
+      @index.index_single(indexable, <<~RUBY, collect_comments: false)
+        class Foo
+        end
+      RUBY
+
+      entry = @index["Foo"].first
+      assert_empty(entry.comments)
     end
   end
 end

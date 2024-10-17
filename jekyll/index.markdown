@@ -22,6 +22,7 @@ Want to discuss Ruby developer experience? Consider joining the public
 - [Usage](#usage)
     - [With VS Code](#with-vs-code)
     - [With other editors](#with-other-editors)
+    - [Composed Ruby LSP bundle](#composed-ruby-lsp-bundle)
 - [Add-ons](#add-ons)
 - [General features](#general-features)
     - [Hover](#hover)
@@ -44,6 +45,8 @@ Want to discuss Ruby developer experience? Consider joining the public
     - [Show syntax tree](#show-syntax-tree)
     - [ERB support](#erb-support)
     - [Guessed types](#guessed-types)
+    - [Rename symbol](#rename-symbol)
+    - [Find references](#find-references)
 - [VS Code only features](#vs-code-features)
     - [Dependencies view](#dependencies-view)
     - [Rails generator integrations](#rails-generator-integrations)
@@ -79,6 +82,11 @@ gem install ruby-lsp
 
 and the language server can be launched running `ruby-lsp` (without bundle exec in order to properly hook into your
 project's dependencies).
+
+### Composed Ruby LSP bundle
+
+The Ruby LSP executable generates a composed bundle with the goal of not requiring users to add the `ruby-lsp` gem to
+their Gemfiles, and at the same time being able to hook into project dependencies. [Learn more](composed-bundle).
 
 ## Add-ons
 
@@ -287,6 +295,22 @@ In VS Code, format on type is disabled by default. You can enable it with `"edit
 
 ![On type formatting demo](images/on_type_formatting.gif)
 
+### Range formatting
+
+Range formatting allows users to format a selection in the editor, without formatting the entire file. It is also the
+feature that enables format on paste to work.
+
+{: .note }
+In VS Code, format on paste is disabled by default. You can enable it with `"editor.formatOnPaste": true`
+
+{: .note }
+Currently, only the [Syntax Tree](https://github.com/ruby-syntax-tree/syntax_tree) formatter has support for partially
+formatting a file. Supporting range formatting for RuboCop or Standard requires new APIs to be exposed so that the
+Ruby LSP can inform the formatter of the base indentation at the place of the selection. Additionally, the formatter
+can only apply corrections that make sense for the portion of the document.
+
+![Range formatting demo](images/range_formatting.gif)
+
 ### Selection range
 
 Selection range (or smart ranges) expands or shrinks a selection based on the code's constructs. In VS Code, this can
@@ -403,6 +427,21 @@ end
 # randomly
 user.a
 ```
+### Rename symbol
+
+Rename allows developers to rename all occurrences of the entity under the cursor across the entire project. In VS Code
+renaming can be triggered by right clicking the entity to rename or by pressing F2 on it. You can also preview the
+edits that will be applied by pressing CTRL/CMD + Enter after typing the desired new name.
+
+![Rename demo](images/rename.gif)
+
+### Find references
+
+The find references request allows users to both see a list of references or jump to reference locations. Note that
+only constants are currently supported, but support for methods, instance variables and local variables is planned.
+
+![References demo](images/references.gif)
+
 ## VS Code features
 
 The following features are all custom made for VS Code.
