@@ -21,6 +21,7 @@ export class Asdf extends VersionManager {
       env: { ...process.env, ...parsedResult.env },
       yjit: parsedResult.yjit,
       version: parsedResult.version,
+      gemPath: parsedResult.gemPath,
     };
   }
 
@@ -28,6 +29,24 @@ export class Asdf extends VersionManager {
   async findAsdfInstallation(): Promise<vscode.Uri> {
     const scriptName =
       path.basename(vscode.env.shell) === "fish" ? "asdf.fish" : "asdf.sh";
+
+    const config = vscode.workspace.getConfiguration("rubyLsp");
+    const asdfPath = config.get<string | undefined>(
+      "rubyVersionManager.asdfExecutablePath",
+    );
+
+    if (asdfPath) {
+      const configuredPath = vscode.Uri.file(asdfPath);
+
+      try {
+        await vscode.workspace.fs.stat(configuredPath);
+        return configuredPath;
+      } catch (error: any) {
+        throw new Error(
+          `ASDF executable configured as ${configuredPath}, but that file doesn't exist`,
+        );
+      }
+    }
 
     // Possible ASDF installation paths as described in https://asdf-vm.com/guide/getting-started.html#_3-install-asdf.
     // In order, the methods of installation are:
