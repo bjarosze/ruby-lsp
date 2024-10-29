@@ -224,7 +224,7 @@ module RubyLsp
           text_document_sync: Interface::TextDocumentSyncOptions.new(
             change: Constant::TextDocumentSyncKind::INCREMENTAL,
             open_close: true,
-            save: true,
+            save: !global_state.supports_watching_files,
           ),
           position_encoding: @global_state.encoding_name,
           selection_range_provider: enabled_features["selectionRanges"],
@@ -906,13 +906,13 @@ module RubyLsp
 
       file_path = uri.to_standardized_path
       return if file_path.nil? || File.directory?(file_path)
+      return unless file_path.end_with?(".rb")
 
       index = @global_state.index
       load_path_entry = $LOAD_PATH.find { |load_path| file_path.start_with?(load_path) }
       indexable = RubyIndexer::IndexablePath.new(load_path_entry, file_path)
 
-      index.delete(indexable)
-      index.index_single(indexable)
+      index.handle_change(indexable)
     end
 
     sig { params(message: T::Hash[Symbol, T.untyped]).void }
